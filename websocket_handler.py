@@ -5,6 +5,7 @@ Manages WebSocket connections for Twilio Media Streams
 import asyncio
 import base64
 import json
+from flask import request
 from flask_socketio import SocketIO, emit
 from deepgram_client import DeepgramTranscriber
 from call_manager import call_manager

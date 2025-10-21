@@ -2,6 +2,7 @@
 Call Manager Module
 Manages active call states and transcripts
 """
+import os
 from datetime import datetime
 from typing import Dict, Optional
 
@@ -94,7 +95,7 @@ class CallManager:
 
     def end_call(self, call_sid: str) -> Optional[dict]:
         """
-        Mark a call as ended and return its data
+        Mark a call as ended, save transcript to file, and return its data
 
         Args:
             call_sid: The call identifier
@@ -116,6 +117,40 @@ class CallManager:
         print(f"\n[Call Manager] Call {call_sid} ended")
         print(f"[Call Manager] Duration: {duration:.2f} seconds")
         print(f"[Call Manager] Transcript entries: {len(call['transcript'])}")
+
+        # NEW: Save transcript to file
+        try:
+            filename = f"transcripts/{call_sid}.txt"
+            with open(filename, 'w') as f:
+                f.write(f"Call SID: {call_sid}\n")
+                f.write(f"Caller: {call['caller_number']}\n")
+                f.write(f"Start Time: {call['start_time'].strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"End Time: {call['end_time'].strftime('%Y-%m-%d %H:%M:%S')}\n")
+                f.write(f"Duration: {duration:.2f} seconds\n")
+                f.write(f"Transcript Entries: {len(call['transcript'])}\n")
+                f.write(f"\n{'=' * 60}\n")
+                f.write(f"FULL TRANSCRIPT\n")
+                f.write(f"{'=' * 60}\n\n")
+
+                # Write final transcripts only
+                final_transcript = self.get_full_transcript(call_sid, final_only=True)
+                f.write(final_transcript)
+
+                f.write(f"\n\n{'=' * 60}\n")
+                f.write(f"DETAILED TRANSCRIPT (with timestamps)\n")
+                f.write(f"{'=' * 60}\n\n")
+
+                # Write all transcript entries with timestamps
+                for entry in call['transcript']:
+                    timestamp = entry['timestamp'].strftime('%H:%M:%S')
+                    elapsed = entry.get('elapsed_seconds', 0)
+                    final_marker = "[FINAL]" if entry['is_final'] else "[INTERIM]"
+                    f.write(f"[{timestamp}] [{elapsed:.1f}s] {final_marker} {entry['text']}\n")
+
+            print(f"[Call Manager] Transcript saved to {filename}")
+
+        except Exception as e:
+            print(f"[Call Manager] Error saving transcript: {e}")
 
         # Remove from active calls
         del self.active_calls[call_sid]

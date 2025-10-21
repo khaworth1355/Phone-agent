@@ -2,15 +2,19 @@
 Main Flask Application
 Handles HTTP routes and initializes WebSocket server
 """
+# Patch for async support
+import eventlet
+eventlet.monkey_patch()
+
 from flask import Flask, request
 from twilio.twiml.voice_response import VoiceResponse, Start
 from config import Config
 from call_manager import call_manager
 from websocket_handler import init_socketio
-import eventlet
 
-# Patch for async support
-eventlet.monkey_patch()
+
+
+
 
 # Initialize Flask app
 app = Flask(__name__)

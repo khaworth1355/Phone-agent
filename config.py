@@ -10,6 +10,8 @@ class Config:
     TWILIO_AUTH_TOKEN = os.getenv('TWILIO_AUTH_TOKEN')
     TWILIO_PHONE_NUMBER = os.getenv('TWILIO_PHONE_NUMBER')
 
+    DEEPGRAM_API_KEY = os.getenv('DEEPGRAM_API_KEY')
+
     # Flask config
     DEBUG = True
     PORT = 5000

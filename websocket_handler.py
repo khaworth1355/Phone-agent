@@ -6,67 +6,71 @@ import asyncio
 import base64
 import json
 from flask import request
-from flask_socketio import SocketIO, emit
 from deepgram_client import DeepgramTranscriber
 from call_manager import call_manager
-
-# Will be initialized from app.py
-socketio = None
-
-
-def init_socketio(app):
-    """
-    Initialize SocketIO with the Flask app
-
-    Args:
-        app: Flask application instance
-    """
-    global socketio
-    socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
-
-    # Register event handlers
-    socketio.on_event('connect', handle_connect, namespace='/media')
-    socketio.on_event('message', handle_media_message, namespace='/media')
-    socketio.on_event('disconnect', handle_disconnect, namespace='/media')
-
-    print("[WebSocket] SocketIO initialized")
-    return socketio
-
 
 # Store active Deepgram connections per WebSocket session
 active_transcribers = {}
 
 
-def handle_connect():
-    """Handle WebSocket connection from Twilio"""
-    print(f"\n[WebSocket] Client connected")
-    print(f"[WebSocket] Session ID: {request.sid}")
-
-
-def handle_media_message(message):
+def register_websocket_handlers(socketio_instance):
     """
-    Handle incoming messages from Twilio Media Stream
+    Register WebSocket event handlers
 
     Args:
-        message: JSON message from Twilio
+        socketio_instance: The SocketIO instance to register handlers with
     """
-    from flask import request
 
-    try:
-        data = json.loads(message) if isinstance(message, str) else message
-        event_type = data.get('event')
+    @socketio_instance.on('connect', namespace='/media')
+    def handle_connect():
+        """Handle WebSocket connection from Twilio"""
+        print(f"\n{'='*60}")
+        print(f"[WebSocket] CLIENT CONNECTED!")
+        print(f"{'='*60}")
+        print(f"[WebSocket] Session ID: {request.sid}")
+        print(f"{'='*60}\n")
 
-        if event_type == 'start':
-            handle_stream_start(data, request.sid)
-        elif event_type == 'media':
-            handle_media_data(data, request.sid)
-        elif event_type == 'stop':
-            handle_stream_stop(data, request.sid)
+    @socketio_instance.on('message', namespace='/media')
+    def handle_message(message):
+        """
+        Handle incoming messages from Twilio Media Stream
 
-    except json.JSONDecodeError as e:
-        print(f"[WebSocket] JSON decode error: {e}")
-    except Exception as e:
-        print(f"[WebSocket] Error handling message: {e}")
+        Args:
+            message: JSON message from Twilio
+        """
+        try:
+            data = json.loads(message) if isinstance(message, str) else message
+            event_type = data.get('event')
+
+            print(f"[WebSocket] Received event: {event_type}")
+
+            if event_type == 'start':
+                handle_stream_start(data, request.sid)
+            elif event_type == 'media':
+                handle_media_data(data, request.sid)
+            elif event_type == 'stop':
+                handle_stream_stop(data, request.sid)
+
+        except json.JSONDecodeError as e:
+            print(f"[WebSocket] JSON decode error: {e}")
+        except Exception as e:
+            print(f"[WebSocket] Error handling message: {e}")
+            import traceback
+            traceback.print_exc()
+
+    @socketio_instance.on('disconnect', namespace='/media')
+    def handle_disconnect():
+        """Handle WebSocket disconnection"""
+        print(f"\n[WebSocket] Client disconnected: {request.sid}")
+
+        # Clean up if transcriber exists
+        if request.sid in active_transcribers:
+            transcriber_data = active_transcribers[request.sid]
+            transcriber = transcriber_data['transcriber']
+            asyncio.create_task(transcriber.close())
+            del active_transcribers[request.sid]
+
+    print("[WebSocket] Event handlers registered for /media namespace")
 
 
 def handle_stream_start(data, session_id):
@@ -80,9 +84,12 @@ def handle_stream_start(data, session_id):
     stream_sid = data['streamSid']
     call_sid = data['start']['callSid']
 
-    print(f"\n[WebSocket] Stream started")
+    print(f"\n{'='*60}")
+    print(f"[WebSocket] STREAM STARTED")
+    print(f"{'='*60}")
     print(f"[WebSocket] Stream SID: {stream_sid}")
     print(f"[WebSocket] Call SID: {call_sid}")
+    print(f"{'='*60}\n")
 
     # Update call manager with stream SID
     call_manager.set_stream_sid(call_sid, stream_sid)
@@ -164,14 +171,3 @@ def handle_stream_stop(data, session_id):
     call_manager.end_call(call_sid)
 
 
-def handle_disconnect():
-    """Handle WebSocket disconnection"""
-    from flask import request
-    print(f"\n[WebSocket] Client disconnected: {request.sid}")
-
-    # Clean up if transcriber exists
-    if request.sid in active_transcribers:
-        transcriber_data = active_transcribers[request.sid]
-        transcriber = transcriber_data['transcriber']
-        asyncio.create_task(transcriber.close())
-        del active_transcribers[request.sid]

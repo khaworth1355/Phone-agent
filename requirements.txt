@@ -1,8 +1,17 @@
+# Flask and core dependencies
 flask==3.0.0
-twilio==8.10.0
 python-dotenv==1.0.0
 
-flask-socketio==5.3.6
-deepgram-sdk==3.2.7
-python-socketio==5.14.0
-eventlet==0.40.3
+# Twilio
+twilio==8.10.0
+
+# WebSocket support
+flask-sock==0.7.0
+simple-websocket==1.0.0
+
+# Deepgram - use older stable version
+deepgram-sdk==2.12.0
+websockets==10.4
+
+# Async support
+nest-asyncio==1.6.0

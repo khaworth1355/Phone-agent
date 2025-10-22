@@ -4,10 +4,9 @@ Handles connection to Deepgram's Speech-to-Text API
 """
 import asyncio
 import json
-from typing import Callable, Optional
-from deepgram import DeepgramClient, DeepgramClientOptions, LiveTranscriptionEvents, LiveOptions
+from typing import Callable
+from deepgram import Deepgram
 from config import Config
-
 
 class DeepgramTranscriber:
     """Manages Deepgram transcription connection"""
@@ -24,11 +23,8 @@ class DeepgramTranscriber:
         self.connection = None
         self.is_connected = False
 
-        # Initialize Deepgram client
-        config = DeepgramClientOptions(
-            options={"keepalive": "true"}
-        )
-        self.deepgram = DeepgramClient(Config.DEEPGRAM_API_KEY, config)
+        # Initialize Deepgram client with the older SDK
+        self.deepgram = Deepgram(Config.DEEPGRAM_API_KEY)
 
     async def connect(self) -> bool:
         """
@@ -38,30 +34,46 @@ class DeepgramTranscriber:
             True if connection successful, False otherwise
         """
         try:
-            # Configure transcription options
-            options = LiveOptions(
-                model="nova-2",
-                language="en-US",
-                smart_format=True,
-                encoding="mulaw",
-                sample_rate=8000,
-                channels=1,
-                interim_results=True,
-                utterance_end_ms=1000,
-                vad_events=True,
+            # Configure transcription options for older SDK
+            options = {
+                'punctuate': True,
+                'interim_results': True,
+                'language': 'en-US',
+                'model': 'nova-2',
+                'encoding': 'mulaw',
+                'sample_rate': 8000,
+                'channels': 1
+            }
+
+            # Create connection using older SDK
+            self.connection = await self.deepgram.transcription.live(options)
+
+            # Register event handlers - handlers receive only the message body
+            def handle_close(msg):
+                print(f"[Deepgram] Close event")
+                self._on_close()
+
+            def handle_transcript(msg):
+                print(f"[Deepgram] Transcript event received")
+                self._on_transcript(msg)
+
+            def handle_error(msg):
+                print(f"[Deepgram] Error event: {msg}")
+
+            self.connection.registerHandler(
+                self.connection.event.CLOSE,
+                handle_close
             )
 
-            # Create connection
-            self.connection = self.deepgram.listen.asynclive.v("1")
+            self.connection.registerHandler(
+                self.connection.event.TRANSCRIPT_RECEIVED,
+                handle_transcript
+            )
 
-            # Set up event handlers
-            self.connection.on(LiveTranscriptionEvents.Open, self._on_open)
-            self.connection.on(LiveTranscriptionEvents.Transcript, self._on_transcript)
-            self.connection.on(LiveTranscriptionEvents.Error, self._on_error)
-            self.connection.on(LiveTranscriptionEvents.Close, self._on_close)
-
-            # Start the connection
-            await self.connection.start(options)
+            self.connection.registerHandler(
+                self.connection.event.ERROR,
+                handle_error
+            )
 
             self.is_connected = True
             print("[Deepgram] Connection established")
@@ -69,8 +81,11 @@ class DeepgramTranscriber:
 
         except Exception as e:
             print(f"[Deepgram] Connection error: {e}")
+            import traceback
+            traceback.print_exc()
             self.is_connected = False
             return False
+
 
     async def send_audio(self, audio_data: bytes) -> None:
         """
@@ -81,7 +96,7 @@ class DeepgramTranscriber:
         """
         if self.connection and self.is_connected:
             try:
-                await self.connection.send(audio_data)
+                self.connection.send(audio_data)
             except Exception as e:
                 print(f"[Deepgram] Error sending audio: {e}")
 
@@ -95,28 +110,42 @@ class DeepgramTranscriber:
             except Exception as e:
                 print(f"[Deepgram] Error closing connection: {e}")
 
-    def _on_open(self, *args, **kwargs) -> None:
-        """Called when connection opens"""
-        print("[Deepgram] Connection opened successfully")
-
-    def _on_transcript(self, *args, **kwargs) -> None:
+    def _on_transcript(self, message) -> None:
         """Called when transcript is received"""
-        result = kwargs.get('result')
-        if not result:
-            return
+        try:
+            print(f"[Deepgram] Raw message received: {type(message)}")
 
-        # Extract transcript
-        transcript = result.channel.alternatives[0].transcript
+            # Parse the message
+            if isinstance(message, str):
+                data = json.loads(message)
+            else:
+                data = message
 
-        if len(transcript) > 0:
-            is_final = result.is_final
-            self.on_transcript_callback(transcript, is_final)
+            print(f"[Deepgram] Parsed data keys: {data.keys() if isinstance(data, dict) else 'not a dict'}")
 
-    def _on_error(self, error, **kwargs) -> None:
-        """Called when an error occurs"""
-        print(f"[Deepgram] Error: {error}")
+            # Extract transcript from the response
+            if 'channel' in data:
+                alternatives = data['channel']['alternatives']
+                if alternatives and len(alternatives) > 0:
+                    transcript = alternatives[0]['transcript']
 
-    def _on_close(self, *args, **kwargs) -> None:
+                    if len(transcript) > 0:
+                        is_final = data.get('is_final', False)
+                        print(f"[Deepgram] Calling callback with: is_final={is_final}, text='{transcript}'")
+                        self.on_transcript_callback(transcript, is_final)
+                    else:
+                        print(f"[Deepgram] Empty transcript, skipping")
+                else:
+                    print(f"[Deepgram] No alternatives in response")
+            else:
+                print(f"[Deepgram] No 'channel' key in response")
+
+        except Exception as e:
+            print(f"[Deepgram] Error processing transcript: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _on_close(self) -> None:
         """Called when connection closes"""
-        print("[Deepgram] Connection closed")
+        print("[Deepgram] Connection closed by server")
         self.is_connected = False

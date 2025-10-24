@@ -68,10 +68,14 @@ class CallManager:
             print(f"[Call Manager] Warning: Call {call_sid} not found")
             return
 
+        now = datetime.now()
+        elapsed = (now - call['start_time']).total_seconds()
+
         transcript_entry = {
             'text': text,
-            'timestamp': datetime.now(),
-            'is_final': is_final
+            'timestamp': now,
+            'is_final': is_final,
+            'elapsed_seconds': elapsed
         }
 
         call['transcript'].append(transcript_entry)
@@ -120,6 +124,9 @@ class CallManager:
 
         # NEW: Save transcript to file
         try:
+            # Ensure transcripts directory exists
+            os.makedirs('transcripts', exist_ok=True)
+
             filename = f"transcripts/{call_sid}.txt"
             with open(filename, 'w') as f:
                 f.write(f"Call SID: {call_sid}\n")

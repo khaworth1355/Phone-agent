@@ -275,7 +275,7 @@ def voice():
     )
 
     start = Start()
-    start.stream(url='wss://guy-cooked-illustrations-lake.trycloudflare.com/media')
+    start.stream(url=Config.WEBSOCKET_URL)
     response.append(start)
 
     response.pause(length=60)

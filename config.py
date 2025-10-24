@@ -12,6 +12,9 @@ class Config:
 
     DEEPGRAM_API_KEY = os.getenv('DEEPGRAM_API_KEY')
 
+    # WebSocket URL - Update this for your environment
+    WEBSOCKET_URL = os.getenv('WEBSOCKET_URL', 'wss://recommendations-editing-seas-plug.trycloudflare.com/media')
+
     # Flask config
     DEBUG = True
     PORT = 5000

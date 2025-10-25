@@ -84,7 +84,7 @@ def voice():
 
     # Generate TwiML response
     response = VoiceResponse()
-    response.say("Hello! I'm Claude, your AI assistant. How can I help you today?", voice='Polly.Joanna')
+    response.say("TEMCO, how can I help you?", voice='Polly.Joanna')
 
     # Start media stream with bidirectional audio
     start = Start()

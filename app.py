@@ -1,42 +1,79 @@
 """
-Main Flask Application - Simplified with proper Deepgram integration
+Phone Agent - Twilio + Deepgram Transcription
 """
-from flask import Flask, request
-from flask_sock import Sock
-from twilio.twiml.voice_response import VoiceResponse, Start
-from config import Config
-from call_manager import call_manager
+import sys
 import json
 import base64
 import asyncio
 import threading
-import queue
-from deepgram_client import DeepgramTranscriber
+from queue import Queue, Empty
 
-# Initialize Flask app
+from flask import Flask, request
+from flask_sock import Sock
+from twilio.twiml.voice_response import VoiceResponse, Start
+
+from config import Config
+from call_manager import call_manager
+from deepgram_client import DeepgramClient
+
+# Ensure real-time console output
+sys.stdout.reconfigure(line_buffering=True) if hasattr(sys.stdout, 'reconfigure') else None
+
+# Initialize Flask
 app = Flask(__name__)
-app.config.from_object(Config)
-
-# Initialize WebSocket
 sock = Sock(app)
 
-print("[App] Flask-Sock initialized")
+# Store active sessions
+sessions = {}
 
-# Store active transcribers
-active_transcribers = {}
-transcriber_locks = {}
+
+@app.route("/")
+def home():
+    """Health check"""
+    return "Phone Agent Running!", 200
+
+
+@app.route("/voice", methods=['POST'])
+def voice():
+    """Handle incoming calls"""
+    print("\n" + "="*80)
+    print("INCOMING CALL")
+    print("="*80)
+
+    call_sid = request.values.get('CallSid')
+    caller = request.values.get('From')
+
+    print(f"Call SID: {call_sid}")
+    print(f"From: {caller}")
+    print("="*80 + "\n")
+
+    # Create call record
+    call_manager.create_call(call_sid, caller)
+
+    # Generate TwiML response
+    response = VoiceResponse()
+    response.say("Hello! Please speak now. I will transcribe what you say.", voice='Polly.Joanna')
+
+    # Start media stream
+    start = Start()
+    start.stream(url=Config.WEBSOCKET_URL)
+    response.append(start)
+
+    response.pause(length=60)
+    response.say("Thank you. Goodbye.", voice='Polly.Joanna')
+
+    return str(response), 200, {'Content-Type': 'text/xml'}
 
 
 @sock.route('/media')
-def media_websocket(ws):
-    """Handle WebSocket connection for Twilio Media Stream"""
-    session_id = id(ws)
+def media(ws):
+    """Handle WebSocket media stream"""
+    print("\n" + "="*80)
+    print("WEBSOCKET CONNECTED")
+    print("="*80 + "\n")
 
-    print(f"\n{'='*60}")
-    print(f"[WebSocket] CLIENT CONNECTED!")
-    print(f"{'='*60}")
-    print(f"[WebSocket] Session ID: {session_id}")
-    print(f"{'='*60}\n")
+    session_id = None
+    call_sid = None
 
     try:
         while True:
@@ -44,276 +81,130 @@ def media_websocket(ws):
             if message is None:
                 break
 
-            try:
-                data = json.loads(message)
-                event_type = data.get('event')
+            data = json.loads(message)
+            event = data.get('event')
 
-                if event_type == 'connected':
-                    print(f"[WebSocket] Twilio connected")
-                elif event_type == 'start':
-                    print(f"[WebSocket] Received event: start")
-                    handle_stream_start(data, session_id)
-                elif event_type == 'media':
-                    handle_media_data(data, session_id)
-                elif event_type == 'stop':
-                    print(f"[WebSocket] Received event: stop")
-                    handle_stream_stop(data, session_id)
-                    break
+            if event == 'start':
+                session_id = id(ws)
+                call_sid = data['start']['callSid']
+                stream_sid = data['streamSid']
 
-            except json.JSONDecodeError as e:
-                print(f"[WebSocket] JSON decode error: {e}")
-            except Exception as e:
-                print(f"[WebSocket] Error processing message: {e}")
-                import traceback
-                traceback.print_exc()
+                print(f"[Stream Start] Call: {call_sid}")
+                print(f"[Stream Start] Stream: {stream_sid}\n")
+
+                # Create session
+                sessions[session_id] = {
+                    'call_sid': call_sid,
+                    'audio_queue': Queue(),
+                    'running': True,
+                    'audio_received_count': 0
+                }
+
+                # Start Deepgram worker
+                thread = threading.Thread(
+                    target=deepgram_worker,
+                    args=(session_id, call_sid),
+                    daemon=True
+                )
+                thread.start()
+
+            elif event == 'media':
+                if session_id in sessions:
+                    # Decode audio and add to queue
+                    payload = data['media']['payload']
+                    audio = base64.b64decode(payload)
+
+                    sessions[session_id]['audio_received_count'] += 1
+
+                    # Log first audio chunk
+                    if sessions[session_id]['audio_received_count'] == 1:
+                        print(f"[WebSocket] First audio chunk: {len(audio)} bytes\n")
+
+                    try:
+                        sessions[session_id]['audio_queue'].put_nowait(audio)
+                    except:
+                        pass  # Skip if queue full
+
+            elif event == 'stop':
+                print(f"\n[Stream Stop] Call: {call_sid}\n")
+                if session_id in sessions:
+                    sessions[session_id]['running'] = False
+                break
 
     except Exception as e:
-        print(f"[WebSocket] Connection error: {e}")
-        import traceback
-        traceback.print_exc()
+        print(f"[WebSocket] Error: {e}")
+
     finally:
-        print(f"\n[WebSocket] Client disconnected: {session_id}")
-        cleanup_session(session_id)
+        # Cleanup
+        if session_id in sessions:
+            audio_received = sessions[session_id].get('audio_received_count', 0)
+            print(f"[WebSocket] Received {audio_received} audio chunks from Twilio")
+            sessions[session_id]['running'] = False
+            del sessions[session_id]
+
+        if call_sid:
+            call_manager.end_call(call_sid)
+
+        print("[WebSocket] Disconnected\n")
 
 
-def handle_stream_start(data, session_id):
-    """Handle start of media stream"""
-    # Prevent duplicate initialization
-    if session_id in transcriber_locks:
-        print(f"[WebSocket] Session {session_id} already initialized, skipping")
-        return
-
-    transcriber_locks[session_id] = True
-
-    stream_sid = data['streamSid']
-    call_sid = data['start']['callSid']
-
-    print(f"\n{'='*60}")
-    print(f"[WebSocket] STREAM STARTED")
-    print(f"{'='*60}")
-    print(f"[WebSocket] Stream SID: {stream_sid}")
-    print(f"[WebSocket] Call SID: {call_sid}")
-    print(f"{'='*60}\n")
-
-    call_manager.set_stream_sid(call_sid, stream_sid)
+def deepgram_worker(session_id, call_sid):
+    """Worker thread for Deepgram connection"""
 
     def on_transcript(text, is_final):
-        """Callback for when transcripts are received"""
-        print(f"[Transcript Callback] Received: is_final={is_final}, text='{text}'")
+        """Callback when transcript received"""
         call_manager.add_transcript(call_sid, text, is_final)
 
-    print(f"[Deepgram] Creating transcriber...")
-    transcriber = DeepgramTranscriber(on_transcript_callback=on_transcript)
+    # Create new event loop for this thread
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 
-    # Create audio queue
-    audio_queue = queue.Queue(maxsize=100)
+    async def run():
+        # Connect to Deepgram
+        client = DeepgramClient(on_transcript)
+        connected = await client.connect()
 
-    active_transcribers[session_id] = {
-        'transcriber': transcriber,
-        'call_sid': call_sid,
-        'stream_sid': stream_sid,
-        'audio_queue': audio_queue,
-        'running': True,
-        'connected': False
-    }
+        if not connected:
+            print("[Deepgram] Failed to connect!")
+            return
 
-    print(f"[Deepgram] Starting connection...")
+        # Process audio queue
+        audio_count = 0
 
-    def deepgram_worker():
-        """Background worker for Deepgram connection"""
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-
-        async def run():
+        while sessions.get(session_id, {}).get('running', False):
             try:
-                # Connect
-                print("[Deepgram] Attempting to connect...")
-                connected = await transcriber.connect()
+                audio = sessions[session_id]['audio_queue'].get(timeout=0.1)
+                await client.send(audio)
 
-                if not connected:
-                    print("[Deepgram] ❌ Connection failed!")
-                    return
+                audio_count += 1
+                if audio_count == 1:
+                    print("[Deepgram] Receiving audio...\n")
 
-                print("[Deepgram] ✅ Connected successfully!")
-                active_transcribers[session_id]['connected'] = True
+                # Yield to event loop to process sends
+                await asyncio.sleep(0)
 
-                # Process audio queue
-                audio_count = 0
-                while active_transcribers.get(session_id, {}).get('running', False):
-                    try:
-                        audio_data = audio_queue.get(timeout=0.1)
-                        if audio_data:
-                            await transcriber.send_audio(audio_data)
-                            audio_count += 1
-                            if audio_count % 50 == 0:
-                                print(f"[Deepgram] Sent {audio_count} audio chunks")
-                    except queue.Empty:
-                        await asyncio.sleep(0.01)
-                    except Exception as e:
-                        print(f"[Deepgram] Error sending audio: {e}")
-
-                # Cleanup
-                print(f"[Deepgram] Closing connection (processed {audio_count} audio chunks)")
-                await transcriber.close()
+            except Empty:
+                await asyncio.sleep(0.01)
 
             except Exception as e:
-                print(f"[Deepgram] Worker exception: {e}")
-                import traceback
-                traceback.print_exc()
+                print(f"[Deepgram] Error: {e}")
+                break
 
-        loop.run_until_complete(run())
+        # Close connection
+        print(f"[Deepgram] Processed {audio_count} audio chunks")
+        await client.close()
 
-    worker = threading.Thread(target=deepgram_worker, daemon=True)
-    worker.start()
+    loop.run_until_complete(run())
+    loop.close()
 
-    # Wait for connection
-    import time
-    for i in range(10):  # Wait up to 5 seconds
-        if active_transcribers.get(session_id, {}).get('connected'):
-            print(f"[Deepgram] Ready to receive audio!")
-            break
-        time.sleep(0.5)
-    else:
-        print(f"[Deepgram] ⚠️ Connection timeout - may not be ready")
-
-
-def handle_media_data(data, session_id):
-    """Handle incoming audio data"""
-    if session_id not in active_transcribers:
-        return
-
-    transcriber_data = active_transcribers[session_id]
-
-    if not transcriber_data.get('connected'):
-        return
-
-    audio_queue = transcriber_data.get('audio_queue')
-    if not audio_queue:
-        return
-
-    try:
-        payload = data['media']['payload']
-        audio_bytes = base64.b64decode(payload)
-
-        # Add to queue (non-blocking)
-        try:
-            audio_queue.put_nowait(audio_bytes)
-        except queue.Full:
-            pass  # Skip if queue is full
-
-    except Exception as e:
-        print(f"[WebSocket] Error handling media: {e}")
-
-
-def handle_stream_stop(data, session_id):
-    """Handle end of media stream"""
-    if session_id not in active_transcribers:
-        return
-
-    transcriber_data = active_transcribers[session_id]
-    call_sid = transcriber_data['call_sid']
-
-    print(f"\n[WebSocket] Stream stopped for call {call_sid}")
-
-    # Stop the worker
-    transcriber_data['running'] = False
-
-    # Wait for processing to finish
-    import time
-    time.sleep(2)
-
-    final_transcript = call_manager.get_full_transcript(call_sid, final_only=True)
-
-    print(f"\n{'=' * 60}")
-    print(f"FINAL TRANSCRIPT FOR CALL {call_sid}:")
-    print(f"{'=' * 60}")
-    print(final_transcript if final_transcript else "(No transcript recorded)")
-    print(f"{'=' * 60}\n")
-
-    cleanup_session(session_id)
-
-
-def cleanup_session(session_id):
-    """Clean up session data"""
-    if session_id in active_transcribers:
-        transcriber_data = active_transcribers[session_id]
-        call_sid = transcriber_data['call_sid']
-        del active_transcribers[session_id]
-        call_manager.end_call(call_sid)
-
-    if session_id in transcriber_locks:
-        del transcriber_locks[session_id]
-
-
-@app.route("/")
-def home():
-    """Home route"""
-    return "Phone Agent Server is Running! (Day 2: STT Enabled)", 200
-
-
-@app.route("/voice", methods=['GET', 'POST'])
-def voice():
-    """Handle incoming voice calls"""
-    caller_number = request.values.get('From', 'Unknown')
-    call_sid = request.values.get('CallSid', 'Unknown')
-
-    print(f"\n{'='*60}")
-    print(f"INCOMING CALL")
-    print(f"{'='*60}")
-    print(f"From: {caller_number}")
-    print(f"Call SID: {call_sid}")
-    print(f"{'='*60}\n")
-
-    call_manager.create_call(call_sid, caller_number)
-
-    response = VoiceResponse()
-
-    response.say(
-        "Hello! Please speak now and I will transcribe what you say.",
-        voice='Polly.Joanna',
-        language='en-US'
-    )
-
-    start = Start()
-    start.stream(url=Config.WEBSOCKET_URL)
-    response.append(start)
-
-    response.pause(length=60)
-
-    response.say("Goodbye!", voice='Polly.Joanna')
-
-    return str(response), 200, {'Content-Type': 'text/xml'}
-
-
-@app.route("/status", methods=['POST'])
-def status():
-    """Handle call status callbacks"""
-    call_status = request.values.get('CallStatus', 'Unknown')
-    call_sid = request.values.get('CallSid', 'Unknown')
-
-    print(f"\n[Status] Call {call_sid}: {call_status}")
-
-    return "", 200
-
-
-print("[App] All routes registered")
 
 if __name__ == "__main__":
-    print(f"\n{'='*60}")
-    print(f"🚀 STARTING PHONE AGENT SERVER")
-    print(f"{'='*60}")
-    print(f"📞 HTTP: http://localhost:{Config.PORT}")
-    print(f"🔌 WebSocket: ws://localhost:{Config.PORT}/media")
-    print(f"🎤 STT: Deepgram Enabled")
-    print(f"{'='*60}\n")
+    print("\n" + "="*80)
+    print("PHONE AGENT SERVER STARTING")
+    print("="*80)
+    print(f"Port: {Config.PORT}")
+    print(f"WebSocket URL: {Config.WEBSOCKET_URL}")
+    print("="*80 + "\n")
 
     from werkzeug.serving import run_simple
-
-    run_simple(
-        '0.0.0.0',
-        Config.PORT,
-        app,
-        use_reloader=False,
-        use_debugger=False,
-        threaded=True
-    )
+    run_simple('0.0.0.0', Config.PORT, app, use_reloader=False, threaded=True)

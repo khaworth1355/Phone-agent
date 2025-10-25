@@ -40,6 +40,10 @@ os.makedirs(TEMP_AUDIO_DIR, exist_ok=True)
 # Store active sessions
 sessions = {}
 
+# Store conversation state per call (persists across reconnections)
+call_conversations = {}  # call_sid -> ConversationManager
+call_ai_speaking_until = {}  # call_sid -> timestamp when AI will stop speaking
+
 
 @app.route("/")
 def home():
@@ -96,6 +100,27 @@ def voice():
     return str(response), 200, {'Content-Type': 'text/xml'}
 
 
+@app.route("/continue-stream", methods=['POST'])
+def continue_stream():
+    """Re-establish media stream after playing AI response"""
+    print("[Continue] Re-establishing media stream")
+
+    # Generate TwiML to re-establish the stream
+    response = VoiceResponse()
+
+    # Re-establish media stream
+    start = Start()
+    stream = start.stream(url=Config.WEBSOCKET_URL)
+    stream.parameter(name='track', value='both_tracks')
+    response.append(start)
+
+    # Keep call open for more conversation (10 minutes)
+    response.pause(length=600)
+    response.say("Thank you for calling. Goodbye!", voice='Polly.Joanna')
+
+    return str(response), 200, {'Content-Type': 'text/xml'}
+
+
 @sock.route('/media')
 def media(ws):
     """Handle WebSocket media stream"""
@@ -121,7 +146,22 @@ def media(ws):
                 stream_sid = data['streamSid']
 
                 print(f"[Stream Start] Call: {call_sid}")
-                print(f"[Stream Start] Stream: {stream_sid}\n")
+                print(f"[Stream Start] Stream: {stream_sid}")
+
+                # Reuse existing conversation manager if available (preserves history across reconnections)
+                if call_sid in call_conversations:
+                    print(f"[Stream Start] ✅ Reusing existing conversation state")
+                    conv_mgr = call_conversations[call_sid]
+                else:
+                    print(f"[Stream Start] Creating new conversation state")
+                    conv_mgr = ConversationManager(call_sid)
+                    call_conversations[call_sid] = conv_mgr
+
+                # Create Claude agent with existing conversation history (if any)
+                claude = ClaudeAgent(conversation_history=conv_mgr.get_conversation_history())
+                print(f"[Stream Start] Claude agent initialized with {len(conv_mgr.get_conversation_history())} messages in history")
+
+                print()
 
                 # Create session with AI components
                 sessions[session_id] = {
@@ -131,10 +171,9 @@ def media(ws):
                     'audio_queue': Queue(),
                     'running': True,
                     'audio_received_count': 0,
-                    'conversation_manager': ConversationManager(call_sid),
-                    'claude_agent': ClaudeAgent(),
+                    'conversation_manager': conv_mgr,
+                    'claude_agent': claude,
                     'elevenlabs_client': ElevenLabsClient(),
-                    'ai_speaking': False  # Track if AI is currently speaking
                 }
 
                 # Start Deepgram worker
@@ -177,10 +216,22 @@ def media(ws):
             audio_received = sessions[session_id].get('audio_received_count', 0)
             print(f"[WebSocket] Received {audio_received} audio chunks from Twilio")
             sessions[session_id]['running'] = False
+            session_call_sid = sessions[session_id]['call_sid']
             del sessions[session_id]
 
-        if call_sid:
-            call_manager.end_call(call_sid)
+            # Only clean up call state if no other sessions exist for this call
+            remaining_sessions = [s for s in sessions.values() if s.get('call_sid') == session_call_sid]
+            if not remaining_sessions:
+                print(f"[WebSocket] Last session for call {session_call_sid}, cleaning up call state")
+                # Clean up call manager
+                try:
+                    call_manager.end_call(session_call_sid)
+                except KeyError:
+                    pass  # Already cleaned up
+
+                # Clean up conversation state (preserves history for potential reconnects within ~30s)
+                # We keep these for a bit longer in case of quick reconnects
+                # In production, you'd want a more sophisticated cleanup strategy
 
         print("[WebSocket] Disconnected\n")
 
@@ -194,6 +245,17 @@ def send_audio_to_twilio(call_sid, audio_bytes):
         audio_bytes: mulaw audio bytes to send
     """
     try:
+        # Calculate audio duration (mulaw is 8kHz, 8-bit, mono)
+        # Each byte = 1 sample, so duration = bytes / 8000 Hz
+        audio_duration = len(audio_bytes) / 8000.0
+        # Add 1 second buffer for network delay and processing
+        ai_speaking_duration = audio_duration + 1.0
+
+        # Mark when AI will stop speaking
+        call_ai_speaking_until[call_sid] = time.time() + ai_speaking_duration
+
+        print(f"[Twilio] Audio duration: {audio_duration:.1f}s (will ignore transcripts until {time.strftime('%H:%M:%S', time.localtime(call_ai_speaking_until[call_sid]))})")
+
         # Generate unique filename
         filename = f"{uuid.uuid4()}.ulaw"
         file_path = os.path.join(TEMP_AUDIO_DIR, filename)
@@ -206,14 +268,16 @@ def send_audio_to_twilio(call_sid, audio_bytes):
         # Extract base URL from websocket URL
         base_url = Config.WEBSOCKET_URL.replace('wss://', 'https://').replace('/media', '')
         audio_url = f"{base_url}/audio/{filename}"
+        continue_url = f"{base_url}/continue-stream"
 
         print(f"[Twilio] Saved audio to: {filename}")
         print(f"[Twilio] Audio URL: {audio_url}")
 
-        # Update the call to play the audio using TwiML
+        # Update the call to play the audio using TwiML, then redirect to continue stream
         twiml = f'''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Play>{audio_url}</Play>
+    <Redirect>{continue_url}</Redirect>
 </Response>'''
 
         # Use Twilio REST API to update the call
@@ -258,7 +322,6 @@ async def handle_ai_response(session_id):
 
     try:
         # Mark AI as speaking (for barge-in detection)
-        session['ai_speaking'] = True
         conv_mgr.start_ai_response()
 
         # Get user's text
@@ -287,14 +350,13 @@ async def handle_ai_response(session_id):
         # Mark conversation complete
         conv_mgr.finish_ai_response(ai_text)
 
+        # Log AI response to call manager (as final transcript)
+        call_manager.add_transcript(call_sid, ai_text, is_final=True, speaker='AI')
+
     except Exception as e:
         print(f"[AI] ❌ Error: {e}")
         import traceback
         traceback.print_exc()
-
-    finally:
-        # Mark AI as done speaking
-        session['ai_speaking'] = False
 
 
 def deepgram_worker(session_id, call_sid):
@@ -307,8 +369,21 @@ def deepgram_worker(session_id, call_sid):
 
     def on_transcript(text, is_final):
         """Callback when transcript received"""
-        # Send to old call manager for logging
-        call_manager.add_transcript(call_sid, text, is_final)
+        # Check if AI is currently speaking - if so, ignore transcripts (this is echo)
+        current_time = time.time()
+        if call_sid in call_ai_speaking_until:
+            if current_time < call_ai_speaking_until[call_sid]:
+                # AI is still speaking, ignore this transcript to prevent echo
+                if text:  # Only log if there's actual text
+                    print(f"[Echo Filter] Ignoring transcript during AI speaking: '{text}'")
+                return
+            else:
+                # AI finished speaking, remove the marker
+                del call_ai_speaking_until[call_sid]
+                print(f"[Echo Filter] AI finished speaking, resuming transcript processing")
+
+        # Send to old call manager for logging (with speaker label)
+        call_manager.add_transcript(call_sid, text, is_final, speaker='Caller')
 
         # Send to conversation manager for pause detection
         conv_mgr.add_transcript(text, is_final)

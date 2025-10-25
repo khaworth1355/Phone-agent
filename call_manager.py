@@ -22,26 +22,35 @@ class CallManager:
         print(f"\n[Call Manager] New call: {call_sid}")
         print(f"[Call Manager] From: {caller_number}\n")
 
-    def add_transcript(self, call_sid, text, is_final):
-        """Add transcript to call"""
+    def add_transcript(self, call_sid, text, is_final, speaker='Caller'):
+        """
+        Add transcript to call
+
+        Args:
+            call_sid: Twilio call SID
+            text: Transcript text
+            is_final: Whether this is a final transcript
+            speaker: Who is speaking ('Caller' or 'AI')
+        """
         if call_sid not in self.calls:
             return
 
         self.calls[call_sid]['transcripts'].append({
             'text': text,
             'is_final': is_final,
+            'speaker': speaker,
             'timestamp': datetime.now()
         })
 
         # Print to console
         if is_final:
             print(f"\n{'='*80}")
-            print(f"[FINAL TRANSCRIPT]")
+            print(f"[FINAL TRANSCRIPT - {speaker}]")
             print(f"{'='*80}")
             print(f"{text}")
             print(f"{'='*80}\n")
         else:
-            print(f"[INTERIM] {text}")
+            print(f"[INTERIM - {speaker}] {text}")
 
     def end_call(self, call_sid):
         """End call and save transcript"""
@@ -59,7 +68,7 @@ class CallManager:
         print(f"[Call Manager] Call ended: {call_sid}\n")
 
     def _save_transcript(self, call):
-        """Save transcript to file with timestamp filename"""
+        """Save transcript to file with timestamp filename (final transcripts only with speaker labels)"""
         try:
             # Create transcripts directory
             os.makedirs('transcripts', exist_ok=True)
@@ -69,31 +78,31 @@ class CallManager:
             filename = f"transcripts/{timestamp}.txt"
 
             # Get final transcripts only
-            final_texts = [t['text'] for t in call['transcripts'] if t['is_final']]
-            full_transcript = ' '.join(final_texts)
+            final_transcripts = [t for t in call['transcripts'] if t['is_final']]
 
             # Calculate duration
             duration = (call['end_time'] - call['start_time']).total_seconds()
 
             # Write file
             with open(filename, 'w') as f:
+                # Header
                 f.write(f"Call SID: {call['call_sid']}\n")
                 f.write(f"Caller: {call['caller_number']}\n")
                 f.write(f"Start: {call['start_time'].strftime('%Y-%m-%d %H:%M:%S')}\n")
                 f.write(f"End: {call['end_time'].strftime('%Y-%m-%d %H:%M:%S')}\n")
                 f.write(f"Duration: {duration:.1f} seconds\n")
                 f.write(f"\n{'='*60}\n")
-                f.write(f"TRANSCRIPT\n")
-                f.write(f"{'='*60}\n\n")
-                f.write(full_transcript if full_transcript else "(No speech detected)")
-                f.write(f"\n\n{'='*60}\n")
-                f.write(f"DETAILED LOG\n")
+                f.write(f"TRANSCRIPT (Final only)\n")
                 f.write(f"{'='*60}\n\n")
 
-                for t in call['transcripts']:
-                    marker = "[FINAL]" if t['is_final'] else "[INTERIM]"
-                    time_str = t['timestamp'].strftime('%H:%M:%S')
-                    f.write(f"[{time_str}] {marker} {t['text']}\n")
+                # Write final transcripts with speaker labels and timestamps
+                if final_transcripts:
+                    for t in final_transcripts:
+                        time_str = t['timestamp'].strftime('%H:%M:%S')
+                        speaker = t.get('speaker', 'Unknown')
+                        f.write(f"[{time_str}] {speaker}: {t['text']}\n")
+                else:
+                    f.write("(No speech detected)\n")
 
             print(f"[Call Manager] Transcript saved: {filename}")
 

@@ -439,6 +439,8 @@ def deepgram_worker(session_id, call_sid):
                 traceback.print_exc()
                 break
 
+
+
         # Close connection
         print(f"[Deepgram] Processed {audio_count} audio chunks")
         await client.close()

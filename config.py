@@ -6,6 +6,24 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def load_knowledge_base():
+    """Load knowledge base from file if it exists"""
+    kb_path = os.path.join(os.path.dirname(__file__), 'knowledge_base.txt')
+    try:
+        if os.path.exists(kb_path):
+            with open(kb_path, 'r', encoding='utf-8') as f:
+                content = f.read().strip()
+                if content:
+                    print(f"[Config] Loaded knowledge base ({len(content)} chars)")
+                    return content
+        print(f"[Config] No knowledge base found at {kb_path}")
+        return ""
+    except Exception as e:
+        print(f"[Config] Error loading knowledge base: {e}")
+        return ""
+
+
 class Config:
     # Twilio credentials
     TWILIO_ACCOUNT_SID = os.getenv('TWILIO_ACCOUNT_SID')
@@ -20,11 +38,21 @@ class Config:
     # Using Claude 3 Haiku - fast and efficient for phone calls
     CLAUDE_MODEL = os.getenv('CLAUDE_MODEL', 'claude-3-haiku-20240307')
 
-    # Claude system prompt (can be customized)
-    CLAUDE_SYSTEM_PROMPT = os.getenv('CLAUDE_SYSTEM_PROMPT',
-        'You are a helpful AI assistant answering phone calls. '
+    # Claude system prompt (can be customized via environment or knowledge_base.txt)
+    _base_prompt = os.getenv('CLAUDE_SYSTEM_PROMPT',
+        'You are a helpful AI assistant answering phone calls for TEMCO. '
         'Keep your responses concise and natural for voice conversation. '
         'Speak clearly and avoid overly long responses.')
+
+    # Load knowledge base and append to system prompt
+    _knowledge_base = load_knowledge_base()
+    if _knowledge_base:
+        CLAUDE_SYSTEM_PROMPT = f"{_base_prompt}\n\n" \
+                               f"=== COMPANY KNOWLEDGE BASE ===\n" \
+                               f"Use this information to answer questions accurately:\n\n" \
+                               f"{_knowledge_base}"
+    else:
+        CLAUDE_SYSTEM_PROMPT = _base_prompt
 
     # ElevenLabs TTS
     ELEVENLABS_API_KEY = os.getenv('ELEVENLABS_API_KEY')

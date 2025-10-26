@@ -1,0 +1,198 @@
+TEMCO COMPANY KNOWLEDGE BASE
+=================================
+
+This file contains information that Claude will reference when answering phone calls.
+Edit this file to add/update company information, products, policies, etc.
+
+INSTRUCTIONS:
+- Keep information clear and concise
+- Use bullet points or short paragraphs
+- Update anytime - changes take effect on next server restart
+- Claude will use this to answer caller questions accurately
+
+
+COMPANY INFORMATION:
+-------------------
+- Company Name: TEMCO
+- Location: Oklahoma City, Oklahoma
+- Owner: Mark Hayworth
+
+
+TEMCO PARTS WASHER KNOWLEDGE BASE
+=====================================
+
+COMPANY INFORMATION
+-------------------
+Company Name: TEMCO
+Contact Phone: 800-245-1869
+Contact Email: temco@washparts.com
+Website: washparts.com
+
+PRODUCT LINE OVERVIEW
+---------------------
+TEMCO manufactures industrial parts washer equipment, specifically spray wash cabinets designed for cleaning industrial parts and components.
+
+PRODUCT 1: T-3 "LIGHTNING"
+===========================
+
+Product Category: Compact Spray Wash Cabinet
+Design Philosophy: Offers the power and simplicity of the bigger T5 unit but in a more compact design
+
+KEY FEATURES
+------------
+- Integrated Automatic Oil Skimmer
+- Small Parts Basket
+- Low-Water Shutoff (Protects Heaters)
+- 6ft Power Cord with Plug & Matching Receptacle
+- Powerful Horizontal Pump: 115 GPM / 65 PSI
+- Heavy Duty Swivel Casters with Brakes
+- Removable Tank Cover (Easy Access to Tank)
+- Adjustable Thermostat
+- Composite Turntable Drive System
+- FREE Bucket of Detergent (TurboKlean brand)
+
+TECHNICAL SPECIFICATIONS - T-3 "LIGHTNING"
+-----------------------------------------
+Turntable Diameter: 22"
+Working Height: 28"
+Tank Size: 32 Gallons
+Turntable Capacity: 750 Lbs
+Pump Performance: 115 GPM @ 65 PSI
+Voltage: 240V 1PH
+Dimensions: 42" x 30" x 54"
+
+PRODUCT 2: T-5 "STORM"
+=======================
+
+Product Category: Versatile Spray Wash Cabinet
+Design Philosophy: Designed with the operator in mind with heavy duty simple and rugged design. The most versatile of TEMCO's Industrial Part Washer products.
+
+KEY FEATURES
+------------
+- Integrated Automatic Oil Skimmer
+- Evaporation System (Less Waste Water)
+- Small Parts Basket
+- Low-Water Shutoff (Protects Heaters)
+- 6ft Power Cord with Plug & Matching Receptacle
+- Powerful Horizontal Pump: 115 GPM / 65 PSI
+- Heavy Duty Swivel Casters with Brakes
+- Removable Tank Cover (Easy Access to Tank)
+- Adjustable Thermostat
+- Composite Turntable Drive System
+- FREE Bucket of Detergent (TurboKlean brand)
+
+TECHNICAL SPECIFICATIONS - T-5 "STORM"
+--------------------------------------
+Turntable Diameter: 30"
+Working Height: 42"
+Tank Size: 60 Gallons
+Turntable Capacity: 1500 Lbs
+Pump Performance: 115 GPM @ 65 PSI
+Voltage: 240V 1PH or 208V 3PH
+Dimensions: 42" x 42" x 65"
+
+COMPARISON: T-3 vs T-5
+======================
+
+SIZE & CAPACITY
+---------------
+T-3 Lightning (Compact):
+- Turntable: 22" diameter
+- Tank: 32 gallons
+- Capacity: 750 lbs
+- Dimensions: 42" x 30" x 54"
+
+T-5 Storm (Versatile):
+- Turntable: 30" diameter
+- Tank: 60 gallons
+- Capacity: 1500 lbs
+- Dimensions: 42" x 42" x 65"
+
+UNIQUE FEATURES
+---------------
+T-3 Lightning:
+- More compact footprint
+- Single voltage option (240V 1PH)
+
+T-5 Storm:
+- Evaporation System for less waste water
+- Larger capacity
+- Multiple voltage options (240V 1PH or 208V 3PH)
+- Most versatile model
+
+SHARED FEATURES (Both Models)
+-----------------------------
+- Same pump performance: 115 GPM @ 65 PSI
+- Integrated Automatic Oil Skimmer
+- Small Parts Basket
+- Low-Water Shutoff protection
+- 6ft Power Cord with Plug & Matching Receptacle
+- Heavy Duty Swivel Casters with Brakes
+- Removable Tank Cover
+- Adjustable Thermostat
+- Composite Turntable Drive System
+- FREE Bucket of TurboKlean Detergent
+
+INCLUDED ACCESSORIES
+--------------------
+Both models include:
+- Small parts basket
+- Automatic oil skimmer
+- TurboKlean detergent (one bucket)
+
+SYSTEM COMPONENTS VISIBLE IN DOCUMENTATION
+------------------------------------------
+- Horizontal pump system (blue)
+- Electrical control box with danger high voltage warning
+- Oil skimmer mechanism (white/cream colored wheel)
+- Turntable with mesh/perforated surface
+- Parts basket system
+- Spray nozzle system inside cabinet
+- Tank cover with handles
+- Caster wheels with braking mechanism
+
+SAFETY FEATURES
+---------------
+- Low-Water Shutoff to protect heating elements
+- High voltage warning labels on electrical components
+- Heavy duty casters with braking system
+- Removable covers for maintenance access
+
+PRODUCT POSITIONING
+-------------------
+T-3 "Lightning": Marketed as COMPACT solution
+- For facilities with space constraints
+- Maintains professional cleaning power in smaller footprint
+
+T-5 "Storm": Marketed as VERSATILE solution
+- For operators needing maximum flexibility
+- Heavy duty design for demanding applications
+- Waste water reduction through evaporation system
+
+TARGET APPLICATIONS
+-------------------
+Industrial parts cleaning including:
+- Automotive components
+- Manufacturing parts
+- Maintenance and repair operations
+- Any application requiring spray washing of industrial parts
+
+CONTACT INFORMATION FOR INQUIRIES
+---------------------------------
+Phone: 800-245-1869
+Email: temco@washparts.com
+Website: washparts.com
+
+FREQUENTLY ASKED QUESTIONS:
+---------------------------
+[Add your FAQs here]
+
+
+POLICIES:
+---------
+[Add company policies here]
+
+
+ADDITIONAL NOTES:
+-----------------
+[Add any other information Claude should know]

@@ -33,10 +33,10 @@ class Config:
 
     # Cloudflare tunnel URL (update this with your current tunnel)
     # Format: wss://your-tunnel.trycloudflare.com/media
-    WEBSOCKET_URL = os.getenv('WEBSOCKET_URL', 'wss://hitachi-optical-bond-eagle.trycloudflare.com/media')
+    WEBSOCKET_URL = os.getenv('WEBSOCKET_URL', 'wss://administration-robot-herbal-knight.trycloudflare.com/media')
 
     # Conversation settings
-    PAUSE_THRESHOLD = float(os.getenv('PAUSE_THRESHOLD', '2.0'))  # Seconds of silence before triggering response
+    PAUSE_THRESHOLD = float(os.getenv('PAUSE_THRESHOLD', '1.0'))  # Seconds of silence before triggering response
     RESPONSE_TIMEOUT = float(os.getenv('RESPONSE_TIMEOUT', '15.0'))  # Max time for Claude/ElevenLabs
 
     # Flask settings

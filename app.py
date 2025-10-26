@@ -86,11 +86,11 @@ def voice():
     response = VoiceResponse()
     response.say("TEMCO, how can I help you?", voice='Polly.Joanna')
 
-    # Start media stream with bidirectional audio
+    # Start media stream with inbound audio only (prevents AI echo)
     start = Start()
     stream = start.stream(url=Config.WEBSOCKET_URL)
-    # Enable both inbound and outbound tracks for bidirectional audio
-    stream.parameter(name='track', value='both_tracks')
+    # Only capture inbound audio (caller's voice) to prevent echo of AI responses
+    stream.parameter(name='track', value='inbound_track')
     response.append(start)
 
     # Keep call open for conversation (10 minutes max)
@@ -108,10 +108,10 @@ def continue_stream():
     # Generate TwiML to re-establish the stream
     response = VoiceResponse()
 
-    # Re-establish media stream
+    # Re-establish media stream (inbound only to prevent echo)
     start = Start()
     stream = start.stream(url=Config.WEBSOCKET_URL)
-    stream.parameter(name='track', value='both_tracks')
+    stream.parameter(name='track', value='inbound_track')
     response.append(start)
 
     # Keep call open for more conversation (10 minutes)

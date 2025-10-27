@@ -236,6 +236,39 @@ def media(ws):
         print("[WebSocket] Disconnected\n")
 
 
+def transfer_call(call_sid, phone_number, announcement_text="Transferring you now."):
+    """
+    Transfer call to another phone number
+
+    Args:
+        call_sid: Twilio call SID
+        phone_number: Phone number to transfer to (E.164 format)
+        announcement_text: What to say before transferring
+    """
+    try:
+        print(f"\n[Transfer] Transferring call {call_sid} to {phone_number}")
+        print(f"[Transfer] Announcement: '{announcement_text}'")
+
+        # Create TwiML to announce transfer and dial
+        twiml = f'''<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say voice="Polly.Joanna">{announcement_text}</Say>
+    <Dial>{phone_number}</Dial>
+</Response>'''
+
+        # Update the call with transfer TwiML
+        twilio_client.calls(call_sid).update(twiml=twiml)
+
+        print(f"[Transfer] ✅ Call transfer initiated to {phone_number}\n")
+        return True
+
+    except Exception as e:
+        print(f"[Transfer] ❌ Error transferring call: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
 def send_audio_to_twilio(call_sid, audio_bytes):
     """
     Send audio back to Twilio caller using REST API
@@ -304,6 +337,60 @@ def send_audio_to_twilio(call_sid, audio_bytes):
         traceback.print_exc()
 
 
+def detect_transfer_intent(user_text):
+    """
+    Keyword-based fallback detection for transfer requests
+    Returns True if user text indicates they want to be transferred to sales
+
+    Args:
+        user_text: The user's spoken text
+
+    Returns:
+        bool: True if transfer keywords detected
+    """
+    if not user_text:
+        return False
+
+    text_lower = user_text.lower()
+
+    # Transfer request keywords
+    transfer_keywords = [
+        'transfer me',
+        'transfer to sales',
+        'connect me to sales',
+        'speak to sales',
+        'talk to sales',
+        'speak with sales',
+        'talk with sales',
+    ]
+
+    # Buying/purchasing keywords
+    buying_keywords = [
+        'want to buy',
+        'want to purchase',
+        'like to buy',
+        'like to purchase',
+        'place an order',
+        'make a purchase',
+        'ready to buy',
+        'ready to purchase',
+    ]
+
+    # Check for explicit transfer requests
+    for keyword in transfer_keywords:
+        if keyword in text_lower:
+            print(f"[Transfer Detection] 🎯 Keyword match: '{keyword}'")
+            return True
+
+    # Check for buying intent
+    for keyword in buying_keywords:
+        if keyword in text_lower:
+            print(f"[Transfer Detection] 🎯 Buying intent: '{keyword}'")
+            return True
+
+    return False
+
+
 async def handle_ai_response(session_id):
     """
     Handle AI response generation and playback
@@ -328,14 +415,33 @@ async def handle_ai_response(session_id):
         user_text = conv_mgr.get_user_text()
         print(f"\n[AI] Processing user input: '{user_text}'")
 
+        # FALLBACK: Check for transfer intent via keywords (safety net if Claude doesn't trigger)
+        keyword_transfer_detected = detect_transfer_intent(user_text)
+        if keyword_transfer_detected:
+            print(f"[AI] 🚨 Fallback transfer detection activated!")
+
         # Get Claude's response
         print(f"[AI] Calling Claude...")
         ai_text = await claude.get_response(user_text)
         print(f"[AI] Claude responded: '{ai_text}'\n")
 
+        # Check for transfer request from Claude
+        transfer_requested_by_claude = '[TRANSFER_TO_SALES]' in ai_text
+
+        # Combine Claude's decision with keyword fallback
+        transfer_requested = transfer_requested_by_claude or keyword_transfer_detected
+
+        # Remove transfer marker from spoken text
+        spoken_text = ai_text.replace('[TRANSFER_TO_SALES]', '').strip()
+
+        # If keyword detected transfer but Claude didn't trigger it, override response
+        if keyword_transfer_detected and not transfer_requested_by_claude:
+            print(f"[AI] ⚠️ Claude didn't trigger transfer, using fallback override")
+            spoken_text = "I'd be happy to connect you with our sales team right now."
+
         # Convert to speech
         print(f"[AI] Generating speech...")
-        audio_bytes = await tts.text_to_speech(ai_text)
+        audio_bytes = await tts.text_to_speech(spoken_text)
 
         if audio_bytes:
             # Send audio to caller via REST API
@@ -348,10 +454,22 @@ async def handle_ai_response(session_id):
             # Note: Twilio's <Say> can't be used mid-stream, so we skip audio
 
         # Mark conversation complete
-        conv_mgr.finish_ai_response(ai_text)
+        conv_mgr.finish_ai_response(spoken_text)
 
         # Log AI response to call manager (as final transcript)
-        call_manager.add_transcript(call_sid, ai_text, is_final=True, speaker='AI')
+        call_manager.add_transcript(call_sid, spoken_text, is_final=True, speaker='AI')
+
+        # Handle transfer if requested (by Claude OR by keyword fallback)
+        if transfer_requested:
+            if transfer_requested_by_claude:
+                print(f"[AI] 🔄 Transfer to sales requested by Claude!")
+            else:
+                print(f"[AI] 🔄 Transfer to sales triggered by keyword fallback!")
+            # Give a moment for the announcement to finish playing
+            await asyncio.sleep(2)
+            # Transfer the call
+            transfer_call(call_sid, Config.SALES_FORWARD_NUMBER)
+            print(f"[AI] Transfer initiated, ending AI session\n")
 
     except Exception as e:
         print(f"[AI] ❌ Error: {e}")

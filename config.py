@@ -40,9 +40,29 @@ class Config:
 
     # Claude system prompt (can be customized via environment or knowledge_base.txt)
     _base_prompt = os.getenv('CLAUDE_SYSTEM_PROMPT',
-        'You are a helpful AI assistant answering phone calls for TEMCO. '
-        'Keep your responses concise and natural for voice conversation. '
-        'Speak clearly and avoid overly long responses.')
+        'You are a helpful AI assistant answering phone calls for TEMCO.\n\n'
+        '⚡ RESPONSE SPEED & LENGTH REQUIREMENTS:\n'
+        '- Keep ALL responses to 1-3 sentences maximum\n'
+        '- Be direct and to the point - no filler words\n'
+        '- Answer the specific question asked, nothing more\n'
+        '- For simple questions (price, location), give 1 sentence answers\n'
+        '- For complex questions, limit to 3 sentences max\n'
+        '- Speak naturally but briefly - this is a phone call, not an essay\n'
+        '- Example good response: "The T5 costs $10,000 and has a 30 inch turntable."\n'
+        '- Example bad response: Long paragraphs with multiple features listed\n\n'
+        '🔴 CRITICAL CALL TRANSFER CAPABILITY - YOU CAN TRANSFER CALLS:\n'
+        'You have the ability to transfer calls to the sales team. DO NOT tell callers you cannot transfer them.\n'
+        'When a caller says ANY of these phrases:\n'
+        '- "I want to buy" / "I want to purchase" / "I\'d like to buy"\n'
+        '- "Transfer me to sales" / "Connect me to sales" / "Speak to sales"\n'
+        '- "Place an order" / "Make a purchase"\n'
+        '- Any purchasing or buying intent\n\n'
+        'YOU MUST:\n'
+        '1. Acknowledge their request positively (e.g., "I\'d be happy to connect you with our sales team")\n'
+        '2. Add [TRANSFER_TO_SALES] at the END of your response\n'
+        '3. DO NOT say you cannot transfer - you CAN and WILL transfer them\n\n'
+        'Example response: "I\'d be happy to connect you with our sales team to complete your purchase. [TRANSFER_TO_SALES]"\n'
+        'The marker MUST be exactly [TRANSFER_TO_SALES] in square brackets.')
 
     # Load knowledge base and append to system prompt
     _knowledge_base = load_knowledge_base()
@@ -61,11 +81,14 @@ class Config:
 
     # Cloudflare tunnel URL (update this with your current tunnel)
     # Format: wss://your-tunnel.trycloudflare.com/media
-    WEBSOCKET_URL = os.getenv('WEBSOCKET_URL', 'wss://administration-robot-herbal-knight.trycloudflare.com/media')
+    WEBSOCKET_URL = os.getenv('WEBSOCKET_URL', 'wss://literacy-values-speaking-interactive.trycloudflare.com/media')
 
     # Conversation settings
-    PAUSE_THRESHOLD = float(os.getenv('PAUSE_THRESHOLD', '1.0'))  # Seconds of silence before triggering response
+    PAUSE_THRESHOLD = float(os.getenv('PAUSE_THRESHOLD', '0.5'))  # Seconds of silence before triggering response
     RESPONSE_TIMEOUT = float(os.getenv('RESPONSE_TIMEOUT', '15.0'))  # Max time for Claude/ElevenLabs
+
+    # Call forwarding
+    SALES_FORWARD_NUMBER = os.getenv('SALES_FORWARD_NUMBER', '+18166741783')  # Sales team number
 
     # Flask settings
     PORT = 5000

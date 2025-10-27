@@ -4,6 +4,14 @@ TEMCO COMPANY KNOWLEDGE BASE
 This file contains information that Claude will reference when answering phone calls.
 Edit this file to add/update company information, products, policies, etc.
 
+⚡ CRITICAL RESPONSE GUIDELINES:
+- ALWAYS keep responses to 1-3 sentences maximum
+- Answer ONLY what was asked - don't volunteer extra information
+- Simple questions = 1 sentence answer
+- Be conversational but BRIEF
+- Phone callers want quick answers, not detailed explanations
+- If they want more details, they will ask follow-up questions
+
 INSTRUCTIONS:
 - Keep information clear and concise
 - Use bullet points or short paragraphs

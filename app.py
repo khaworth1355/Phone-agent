@@ -44,6 +44,152 @@ sessions = {}
 call_conversations = {}  # call_sid -> ConversationManager
 call_ai_speaking_until = {}  # call_sid -> timestamp when AI will stop speaking
 
+# Cached responses for common questions (populated at startup)
+cached_responses = {}
+
+
+def generate_cached_responses():
+    """
+    Generate and cache audio responses for common questions
+    Called at server startup to pre-generate responses
+    """
+    print("[Cache] Generating cached responses for common questions...")
+
+    # Define common Q&A pairs
+    common_qa = {
+        'price_t5': {
+            'keywords': ['how much', 'price', 'cost', 't5', 't 5', 'storm'],
+            'response': "The T5 Storm costs $10,000."
+        },
+        'price_t3': {
+            'keywords': ['how much', 'price', 'cost', 't3', 't 3', 'lightning'],
+            'response': "The T3 Lightning costs $8,000."
+        },
+        'location': {
+            'keywords': ['where', 'located', 'location', 'headquarter'],
+            'response': "TEMCO is headquartered in Oklahoma City."
+        },
+        'owner': {
+            'keywords': ['owner', 'who owns', 'mark'],
+            'response': "The owner of TEMCO is Mark Hayworth."
+        },
+        'contact': {
+            'keywords': ['phone', 'number', 'contact', 'reach', 'call'],
+            'response': "You can reach TEMCO at 800-245-1869."
+        }
+    }
+
+    try:
+        # Create temporary ElevenLabs client
+        tts = ElevenLabsClient()
+
+        # Generate audio for each response
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
+        for key, qa in common_qa.items():
+            try:
+                print(f"[Cache] Generating: {qa['response']}")
+                audio_bytes = loop.run_until_complete(tts.text_to_speech(qa['response']))
+
+                if audio_bytes:
+                    cached_responses[key] = {
+                        'keywords': qa['keywords'],
+                        'response': qa['response'],
+                        'audio': audio_bytes
+                    }
+                    print(f"[Cache] ✅ Cached: {key}")
+                else:
+                    print(f"[Cache] ⚠️  Failed: {key}")
+
+            except Exception as e:
+                print(f"[Cache] Error caching {key}: {e}")
+
+        loop.close()
+
+        print(f"[Cache] ✅ Cached {len(cached_responses)} responses\n")
+        return True
+
+    except Exception as e:
+        print(f"[Cache] ❌ Error generating cached responses: {e}")
+        return False
+
+
+def check_cached_response(user_text):
+    """
+    Check if user's question matches a cached response
+
+    Args:
+        user_text: User's spoken text
+
+    Returns:
+        dict with 'audio' and 'text' if match found, None otherwise
+    """
+    if not user_text or not cached_responses:
+        return None
+
+    text_lower = user_text.lower()
+
+    # Check each cached response
+    for key, cached in cached_responses.items():
+        # Count keyword matches
+        matches = sum(1 for keyword in cached['keywords'] if keyword in text_lower)
+
+        # If multiple keywords match, likely a match
+        if matches >= 2:
+            print(f"[Cache] 🎯 Match found: {key}")
+            return {
+                'audio': cached['audio'],
+                'text': cached['response'],
+                'transfer': False
+            }
+
+    return None
+
+
+def generate_greeting_audio():
+    """
+    Generate greeting audio file using ElevenLabs
+    Creates a permanent greeting file if it doesn't exist
+    """
+    greeting_path = os.path.join(TEMP_AUDIO_DIR, 'greeting.ulaw')
+
+    # Only generate if file doesn't exist
+    if os.path.exists(greeting_path):
+        print(f"[Greeting] Using existing greeting audio: {greeting_path}")
+        return greeting_path
+
+    print(f"[Greeting] Generating new greeting audio...")
+
+    try:
+        # Create temporary ElevenLabs client
+        tts = ElevenLabsClient()
+        greeting_text = "TEMCO, how can I help you?"
+
+        # Generate audio synchronously at startup
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        audio_bytes = loop.run_until_complete(tts.text_to_speech(greeting_text))
+        loop.close()
+
+        if audio_bytes:
+            # Save to file
+            with open(greeting_path, 'wb') as f:
+                f.write(audio_bytes)
+            print(f"[Greeting] ✅ Generated greeting audio: {greeting_path}")
+            return greeting_path
+        else:
+            print(f"[Greeting] ❌ Failed to generate greeting audio")
+            return None
+
+    except Exception as e:
+        print(f"[Greeting] ❌ Error generating greeting: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
 
 @app.route("/")
 def home():
@@ -84,7 +230,17 @@ def voice():
 
     # Generate TwiML response
     response = VoiceResponse()
-    response.say("TEMCO, how can I help you?", voice='Polly.Joanna')
+
+    # Play ElevenLabs greeting instead of Twilio TTS
+    greeting_path = os.path.join(TEMP_AUDIO_DIR, 'greeting.ulaw')
+    if os.path.exists(greeting_path):
+        base_url = Config.WEBSOCKET_URL.replace('wss://', 'https://').replace('/media', '')
+        greeting_url = f"{base_url}/audio/greeting.ulaw"
+        response.play(greeting_url)
+    else:
+        # Fallback to Twilio TTS if ElevenLabs greeting doesn't exist
+        print(f"[Voice] ⚠️ ElevenLabs greeting not found, using Twilio TTS")
+        response.say("TEMCO, how can I help you?", voice='Polly.Joanna')
 
     # Start media stream with inbound audio only (prevents AI echo)
     start = Start()
@@ -108,9 +264,10 @@ def continue_stream():
     # Generate TwiML to re-establish the stream
     response = VoiceResponse()
 
-    # Re-establish media stream (inbound only to prevent echo)
+    # Re-establish media stream with inbound audio only (prevents AI echo)
     start = Start()
     stream = start.stream(url=Config.WEBSOCKET_URL)
+    # Only capture inbound audio (caller's voice) to prevent echo of AI responses
     stream.parameter(name='track', value='inbound_track')
     response.append(start)
 
@@ -264,6 +421,63 @@ def transfer_call(call_sid, phone_number, announcement_text="Transferring you no
 
     except Exception as e:
         print(f"[Transfer] ❌ Error transferring call: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def send_audio_via_websocket(session_id, audio_bytes):
+    """
+    Send audio directly through WebSocket (fastest method)
+
+    Args:
+        session_id: Session ID
+        audio_bytes: mulaw audio bytes to send
+    """
+    if session_id not in sessions:
+        print(f"[WebSocket Audio] Session {session_id} not found")
+        return False
+
+    session = sessions[session_id]
+    ws = session.get('ws')
+    stream_sid = session.get('stream_sid')
+
+    if not ws or not stream_sid:
+        print(f"[WebSocket Audio] No active WebSocket or stream_sid")
+        return False
+
+    try:
+        # Calculate audio duration for echo prevention
+        audio_duration = len(audio_bytes) / 8000.0
+        call_sid = session['call_sid']
+        call_ai_speaking_until[call_sid] = time.time() + audio_duration + 0.5
+
+        print(f"[WebSocket Audio] Streaming {len(audio_bytes)} bytes ({audio_duration:.1f}s)")
+
+        # Twilio expects chunks of 160 bytes (20ms of mulaw audio at 8kHz)
+        chunk_size = 160
+        for i in range(0, len(audio_bytes), chunk_size):
+            chunk = audio_bytes[i:i+chunk_size]
+
+            # Encode as base64
+            payload = base64.b64encode(chunk).decode('utf-8')
+
+            # Send media message to Twilio
+            message = json.dumps({
+                "event": "media",
+                "streamSid": stream_sid,
+                "media": {
+                    "payload": payload
+                }
+            })
+
+            ws.send(message)
+
+        print(f"[WebSocket Audio] ✅ Streamed audio successfully")
+        return True
+
+    except Exception as e:
+        print(f"[WebSocket Audio] ❌ Error: {e}")
         import traceback
         traceback.print_exc()
         return False
@@ -485,6 +699,60 @@ def deepgram_worker(session_id, call_sid):
 
     conv_mgr = sessions[session_id]['conversation_manager']
 
+    # Storage for predictive response
+    predictive_response_data = {
+        'task': None,
+        'result': None,
+        'text': None
+    }
+
+    def on_predictive_trigger(interim_text):
+        """Callback when stable interim detected - start generating response early"""
+        nonlocal predictive_response_data
+
+        # Cancel any existing predictive response
+        if predictive_response_data['task'] and not predictive_response_data['task'].done():
+            predictive_response_data['task'].cancel()
+
+        # Start new predictive response generation
+        async def generate_predictive():
+            try:
+                print(f"[Predictive] Generating response for: '{interim_text}'")
+                claude = sessions[session_id]['claude_agent']
+                tts = sessions[session_id]['elevenlabs_client']
+
+                # Get Claude's response
+                ai_text = await claude.get_response(interim_text)
+                print(f"[Predictive] Claude ready: '{ai_text[:50]}...'")
+
+                # Check for transfer
+                transfer_requested = '[TRANSFER_TO_SALES]' in ai_text
+                spoken_text = ai_text.replace('[TRANSFER_TO_SALES]', '').strip()
+
+                # Generate audio
+                audio_bytes = await tts.text_to_speech(spoken_text)
+
+                if audio_bytes:
+                    predictive_response_data['result'] = {
+                        'audio': audio_bytes,
+                        'text': spoken_text,
+                        'transfer': transfer_requested,
+                        'interim_text': interim_text
+                    }
+                    print(f"[Predictive] ✅ Response ready in advance!")
+
+            except asyncio.CancelledError:
+                print(f"[Predictive] ⚠️ Cancelled (user still talking)")
+            except Exception as e:
+                print(f"[Predictive] ❌ Error: {e}")
+
+        # Create and store task
+        loop = asyncio.get_event_loop()
+        predictive_response_data['task'] = loop.create_task(generate_predictive())
+
+    # Set up predictive response callback
+    conv_mgr.on_predictive_trigger = on_predictive_trigger
+
     def on_transcript(text, is_final):
         """Callback when transcript received"""
         # Check if AI is currently speaking - if so, ignore transcripts (this is echo)
@@ -547,9 +815,43 @@ def deepgram_worker(session_id, call_sid):
 
                     # Check if user has paused speaking
                     if conv_mgr.check_for_pause():
-                        # Trigger AI response
-                        print(f"[Conversation] Triggering AI response...")
-                        await handle_ai_response(session_id)
+                        user_text = conv_mgr.get_user_text()
+
+                        # PRIORITY 1: Check cached responses (instant)
+                        cached_result = check_cached_response(user_text)
+                        if cached_result:
+                            print(f"[Conversation] 💨 Using cached response!")
+                            conv_mgr.start_ai_response()
+                            send_audio_to_twilio(call_sid, cached_result['audio'])
+                            conv_mgr.finish_ai_response(cached_result['text'])
+                            call_manager.add_transcript(call_sid, cached_result['text'], is_final=True, speaker='AI')
+
+                            # Clear predictive response if any
+                            predictive_response_data['result'] = None
+
+                        # PRIORITY 2: Check if predictive response is ready
+                        elif predictive_response_data['result']:
+                            print(f"[Conversation] ⚡ Using pre-generated response!")
+                            result = predictive_response_data['result']
+
+                            # Play the pre-generated audio
+                            conv_mgr.start_ai_response()
+                            send_audio_to_twilio(call_sid, result['audio'])
+                            conv_mgr.finish_ai_response(result['text'])
+                            call_manager.add_transcript(call_sid, result['text'], is_final=True, speaker='AI')
+
+                            # Handle transfer if needed
+                            if result['transfer']:
+                                await asyncio.sleep(2)
+                                transfer_call(call_sid, Config.SALES_FORWARD_NUMBER)
+
+                            # Clear predictive response
+                            predictive_response_data['result'] = None
+
+                        else:
+                            # No predictive response ready, generate normally
+                            print(f"[Conversation] Triggering AI response...")
+                            await handle_ai_response(session_id)
 
             except Exception as e:
                 print(f"[Deepgram] Error: {e}")
@@ -574,6 +876,21 @@ if __name__ == "__main__":
     print(f"Port: {Config.PORT}")
     print(f"WebSocket URL: {Config.WEBSOCKET_URL}")
     print("="*80 + "\n")
+
+    # Generate greeting audio file with ElevenLabs
+    print("Generating greeting audio...")
+    greeting_path = generate_greeting_audio()
+    if greeting_path:
+        print(f"✅ Greeting audio ready\n")
+    else:
+        print(f"⚠️ Greeting audio generation failed - will use Twilio TTS fallback\n")
+
+    # Generate cached responses for common questions
+    print("="*80)
+    generate_cached_responses()
+    print("="*80 + "\n")
+
+    print("🚀 Server ready - all optimizations active!\n")
 
     from werkzeug.serving import run_simple
     run_simple('0.0.0.0', Config.PORT, app, use_reloader=False, threaded=True)

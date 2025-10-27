@@ -83,7 +83,7 @@ class ClaudeAgent:
                 asyncio.to_thread(
                     self.client.messages.create,
                     model=self.model,
-                    max_tokens=200,  # Reduced for faster responses and shorter answers
+                    max_tokens=150,  # Further reduced for maximum speed
                     system=self.system_prompt,
                     messages=self.conversation_history
                 ),

@@ -41,12 +41,13 @@ class Config:
     # Claude system prompt (can be customized via environment or knowledge_base.txt)
     _base_prompt = os.getenv('CLAUDE_SYSTEM_PROMPT',
         'You are a helpful AI assistant answering phone calls for TEMCO.\n\n'
-        '⚡ RESPONSE SPEED & LENGTH REQUIREMENTS:\n'
-        '- Keep ALL responses to 1-3 sentences maximum\n'
-        '- Be direct and to the point - no filler words\n'
+        '⚡ RESPONSE SPEED & LENGTH REQUIREMENTS - CRITICAL:\n'
+        '- Respond INSTANTLY - caller is waiting on the line\n'
+        '- Keep ALL responses to 1-2 sentences maximum (3 sentences ONLY if absolutely necessary)\n'
+        '- Be direct and to the point - no filler words, no pleasantries\n'
         '- Answer the specific question asked, nothing more\n'
         '- For simple questions (price, location), give 1 sentence answers\n'
-        '- For complex questions, limit to 3 sentences max\n'
+        '- Do NOT overthink - give the first clear answer that comes to mind\n'
         '- Speak naturally but briefly - this is a phone call, not an essay\n'
         '- Example good response: "The T5 costs $10,000 and has a 30 inch turntable."\n'
         '- Example bad response: Long paragraphs with multiple features listed\n\n'
@@ -84,8 +85,12 @@ class Config:
     WEBSOCKET_URL = os.getenv('WEBSOCKET_URL', 'wss://literacy-values-speaking-interactive.trycloudflare.com/media')
 
     # Conversation settings
-    PAUSE_THRESHOLD = float(os.getenv('PAUSE_THRESHOLD', '0.5'))  # Seconds of silence before triggering response
+    PAUSE_THRESHOLD = float(os.getenv('PAUSE_THRESHOLD', '0.3'))  # Seconds of silence before triggering response
     RESPONSE_TIMEOUT = float(os.getenv('RESPONSE_TIMEOUT', '15.0'))  # Max time for Claude/ElevenLabs
+
+    # Predictive response settings
+    PREDICTIVE_RESPONSES = bool(os.getenv('PREDICTIVE_RESPONSES', 'True'))  # Start generating on interim transcripts
+    INTERIM_STABILITY_THRESHOLD = int(os.getenv('INTERIM_STABILITY_THRESHOLD', '3'))  # Number of matching interims to trigger
 
     # Call forwarding
     SALES_FORWARD_NUMBER = os.getenv('SALES_FORWARD_NUMBER', '+18166741783')  # Sales team number

@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rm:*)",
+      "Bash(python app.py:*)",
+      "Bash(dir:*)",
+      "Bash(C:/Users/khawo/PycharmProjects/Phone-agent/.venv/Scripts/pip.exe install:*)",
+      "Bash(.venv/Scripts/python.exe -m pip:*)",
+      "Bash(choco install:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

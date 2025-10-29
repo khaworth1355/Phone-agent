@@ -1,0 +1,24 @@
+[Unit]
+Description=Phone Agent - AI Call Handler
+After=network.target
+
+[Service]
+Type=simple
+User=phoneagent
+Group=phoneagent
+WorkingDirectory=/opt/phone-agent
+Environment="PATH=/opt/phone-agent/venv/bin"
+ExecStart=/opt/phone-agent/venv/bin/python app.py
+Restart=always
+RestartSec=10
+
+# Logging
+StandardOutput=append:/opt/phone-agent/logs/systemd-output.log
+StandardError=append:/opt/phone-agent/logs/systemd-error.log
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

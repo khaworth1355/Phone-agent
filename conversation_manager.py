@@ -15,6 +15,7 @@ class ConversationState(Enum):
     WAITING_FOR_PAUSE = "waiting_for_pause"
     AI_THINKING = "ai_thinking"
     AI_SPEAKING = "ai_speaking"
+    COLLECTING_CUSTOMER_INFO = "collecting_customer_info"
 
 
 class ConversationManager:
@@ -43,6 +44,11 @@ class ConversationManager:
 
         # Conversation history for Claude
         self.conversation_history = []
+
+        # Detergent order tracking
+        self.collecting_detergent_info = False
+        self.detergent_customer_name = None
+        self.detergent_customer_phone = None
 
         # Callbacks
         self.on_user_finished = None  # Callback when user finishes speaking
@@ -258,3 +264,41 @@ class ConversationManager:
         self.last_speech_time = None
         self.last_final_time = None
         print(f"[ConversationManager] Reset")
+
+    def start_collecting_detergent_info(self):
+        """Mark that we're starting to collect detergent customer info"""
+        self.collecting_detergent_info = True
+        self.detergent_customer_name = None
+        self.detergent_customer_phone = None
+        print(f"[ConversationManager] Started collecting detergent order info")
+
+    def set_detergent_customer_name(self, name: str):
+        """Store customer name for detergent order"""
+        self.detergent_customer_name = name
+        print(f"[ConversationManager] Customer name: {name}")
+
+    def set_detergent_customer_phone(self, phone: str):
+        """Store customer phone for detergent order"""
+        self.detergent_customer_phone = phone
+        print(f"[ConversationManager] Customer phone: {phone}")
+
+    def has_complete_detergent_info(self) -> bool:
+        """Check if we have all required detergent order info"""
+        return (self.collecting_detergent_info and
+                self.detergent_customer_name is not None and
+                self.detergent_customer_phone is not None)
+
+    def get_detergent_order_info(self) -> dict:
+        """Get collected detergent order information"""
+        return {
+            'name': self.detergent_customer_name,
+            'phone': self.detergent_customer_phone,
+            'call_sid': self.call_sid
+        }
+
+    def clear_detergent_info(self):
+        """Clear detergent order info"""
+        self.collecting_detergent_info = False
+        self.detergent_customer_name = None
+        self.detergent_customer_phone = None
+        print(f"[ConversationManager] Cleared detergent order info")

@@ -63,7 +63,18 @@ class Config:
         '2. Add [TRANSFER_TO_SALES] at the END of your response\n'
         '3. DO NOT say you cannot transfer - you CAN and WILL transfer them\n\n'
         'Example response: "I\'d be happy to connect you with our sales team to complete your purchase. [TRANSFER_TO_SALES]"\n'
-        'The marker MUST be exactly [TRANSFER_TO_SALES] in square brackets.')
+        'The marker MUST be exactly [TRANSFER_TO_SALES] in square brackets.\n\n'
+        '🧴 DETERGENT ORDER SPECIAL HANDLING:\n'
+        'When a caller wants to buy/order MORE DETERGENT (TurboKlean), follow this EXACT process:\n'
+        '1. First, ask for their name: "I can help with that. May I have your name please?"\n'
+        '   - Add [COLLECT_DETERGENT_NAME] at the END of your response\n'
+        '2. After they provide their name, ask for phone number: "Thank you [name]. What\'s the best phone number to reach you?"\n'
+        '   - Add [COLLECT_DETERGENT_PHONE] at the END of your response\n'
+        '3. After they provide phone number, confirm and transfer: "Perfect [name], I\'ll connect you with our team to complete your detergent order."\n'
+        '   - Add [DETERGENT_ORDER_COMPLETE] at the END of your response\n\n'
+        'IMPORTANT: This special flow ONLY applies when they want to buy DETERGENT/TurboKlean.\n'
+        'For other products (T3, T5 washers), use the normal [TRANSFER_TO_SALES] flow.\n'
+        'Markers must be EXACTLY as written in square brackets.')
 
     # Load knowledge base and append to system prompt
     _knowledge_base = load_knowledge_base()
@@ -80,9 +91,10 @@ class Config:
     ELEVENLABS_VOICE_ID = os.getenv('ELEVENLABS_VOICE_ID', '21m00Tcm4TlvDq8ikWAM')  # Rachel
     ELEVENLABS_MODEL = os.getenv('ELEVENLABS_MODEL', 'eleven_turbo_v2_5')
 
-    # Cloudflare tunnel URL (update this with your current tunnel)
-    # Format: wss://your-tunnel.trycloudflare.com/media
-    WEBSOCKET_URL = os.getenv('WEBSOCKET_URL', 'wss://literacy-values-speaking-interactive.trycloudflare.com/media')
+    # WebSocket URL for Twilio media stream
+    # Production: Set this to wss://YOUR_DROPLET_IP/media or wss://your-domain.com/media
+    # Development: Use Cloudflare tunnel or ngrok
+    WEBSOCKET_URL = os.getenv('WEBSOCKET_URL', 'wss://localhost/media')
 
     # Conversation settings
     PAUSE_THRESHOLD = float(os.getenv('PAUSE_THRESHOLD', '0.3'))  # Seconds of silence before triggering response
@@ -96,5 +108,5 @@ class Config:
     SALES_FORWARD_NUMBER = os.getenv('SALES_FORWARD_NUMBER', '+18166741783')  # Sales team number
 
     # Flask settings
-    PORT = 5000
-    DEBUG = True
+    PORT = int(os.getenv('PORT', 5000))
+    DEBUG = os.getenv('DEBUG', 'False').lower() == 'true'

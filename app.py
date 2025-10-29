@@ -639,14 +639,42 @@ async def handle_ai_response(session_id):
         ai_text = await claude.get_response(user_text)
         print(f"[AI] Claude responded: '{ai_text}'\n")
 
+        # Check for detergent order markers
+        collect_name = '[COLLECT_DETERGENT_NAME]' in ai_text
+        collect_phone = '[COLLECT_DETERGENT_PHONE]' in ai_text
+        detergent_complete = '[DETERGENT_ORDER_COMPLETE]' in ai_text
+
+        # Handle detergent order flow
+        if collect_name:
+            print(f"[AI] 🧴 Starting detergent order - collecting name")
+            conv_mgr.start_collecting_detergent_info()
+        elif collect_phone:
+            print(f"[AI] 🧴 Collecting phone number")
+            # Extract name from user's previous response (simple extraction)
+            conv_mgr.set_detergent_customer_name(user_text.strip())
+        elif detergent_complete:
+            print(f"[AI] 🧴 Detergent order complete - storing phone")
+            # Extract phone from user's response
+            conv_mgr.set_detergent_customer_phone(user_text.strip())
+
+            # Log the collected information
+            order_info = conv_mgr.get_detergent_order_info()
+            print(f"[AI] 🧴 Detergent Order Info:")
+            print(f"     Name: {order_info['name']}")
+            print(f"     Phone: {order_info['phone']}")
+            print(f"     Call SID: {order_info['call_sid']}")
+
         # Check for transfer request from Claude
         transfer_requested_by_claude = '[TRANSFER_TO_SALES]' in ai_text
 
         # Combine Claude's decision with keyword fallback
-        transfer_requested = transfer_requested_by_claude or keyword_transfer_detected
+        transfer_requested = transfer_requested_by_claude or keyword_transfer_detected or detergent_complete
 
-        # Remove transfer marker from spoken text
+        # Remove markers from spoken text
         spoken_text = ai_text.replace('[TRANSFER_TO_SALES]', '').strip()
+        spoken_text = spoken_text.replace('[COLLECT_DETERGENT_NAME]', '').strip()
+        spoken_text = spoken_text.replace('[COLLECT_DETERGENT_PHONE]', '').strip()
+        spoken_text = spoken_text.replace('[DETERGENT_ORDER_COMPLETE]', '').strip()
 
         # If keyword detected transfer but Claude didn't trigger it, override response
         if keyword_transfer_detected and not transfer_requested_by_claude:
@@ -725,9 +753,15 @@ def deepgram_worker(session_id, call_sid):
                 ai_text = await claude.get_response(interim_text)
                 print(f"[Predictive] Claude ready: '{ai_text[:50]}...'")
 
-                # Check for transfer
+                # Check for transfer and detergent markers
                 transfer_requested = '[TRANSFER_TO_SALES]' in ai_text
+                detergent_complete = '[DETERGENT_ORDER_COMPLETE]' in ai_text
+
+                # Remove all markers from spoken text
                 spoken_text = ai_text.replace('[TRANSFER_TO_SALES]', '').strip()
+                spoken_text = spoken_text.replace('[COLLECT_DETERGENT_NAME]', '').strip()
+                spoken_text = spoken_text.replace('[COLLECT_DETERGENT_PHONE]', '').strip()
+                spoken_text = spoken_text.replace('[DETERGENT_ORDER_COMPLETE]', '').strip()
 
                 # Generate audio
                 audio_bytes = await tts.text_to_speech(spoken_text)
@@ -736,7 +770,7 @@ def deepgram_worker(session_id, call_sid):
                     predictive_response_data['result'] = {
                         'audio': audio_bytes,
                         'text': spoken_text,
-                        'transfer': transfer_requested,
+                        'transfer': transfer_requested or detergent_complete,
                         'interim_text': interim_text
                     }
                     print(f"[Predictive] ✅ Response ready in advance!")

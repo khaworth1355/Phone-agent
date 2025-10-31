@@ -4,7 +4,7 @@ module.exports = {
     script: 'app.py',
     cwd: '/opt/phone-agent',
     interpreter: '/opt/phone-agent/venv/bin/python',
-
+    env_file:'/opt/phone-agent/.env',
     // Environment
     env: {
       PYTHONPATH: '/opt/phone-agent',

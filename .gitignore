@@ -62,3 +62,13 @@ htmlcov/
 
 # Deployment
 gunicorn.pid
+.env
+.env
+*.env
+.env.*
+*.log
+logs/
+temp_audio/
+transcripts/
+__pycache__/
+*.pyc

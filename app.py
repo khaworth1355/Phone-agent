@@ -47,6 +47,64 @@ call_ai_speaking_until = {}  # call_sid -> timestamp when AI will stop speaking
 # Cached responses for common questions (populated at startup)
 cached_responses = {}
 
+# Cache persistence directory
+CACHE_DIR = os.path.join(os.path.dirname(__file__), 'cached_audio')
+os.makedirs(CACHE_DIR, exist_ok=True)
+
+
+def load_cached_responses_from_disk():
+    """Load cached responses from disk if they exist"""
+    print("[Cache] Checking for saved cache files...")
+
+    # Define common Q&A pairs (metadata)
+    common_qa = {
+        'price_t5': {
+            'keywords': ['how much', 'price', 'cost', 't5', 't 5', 'storm'],
+            'response': "The T5 Storm costs $10,000."
+        },
+        'price_t3': {
+            'keywords': ['how much', 'price', 'cost', 't3', 't 3', 'lightning'],
+            'response': "The T3 Lightning costs $8,000."
+        },
+        'location': {
+            'keywords': ['where', 'located', 'location', 'headquarter'],
+            'response': "TEMCO is headquartered in Oklahoma City."
+        },
+        'owner': {
+            'keywords': ['owner', 'who owns', 'mark', 'who is the'],
+            'response': "The owner of TEMCO is Mark Hayworth."
+        },
+        'contact': {
+            'keywords': ['phone', 'number', 'contact', 'reach', 'call'],
+            'response': "You can reach TEMCO at 800-245-1869."
+        }
+    }
+
+    loaded_count = 0
+    for key, qa in common_qa.items():
+        cache_file = os.path.join(CACHE_DIR, f"{key}.ulaw")
+        if os.path.exists(cache_file):
+            try:
+                with open(cache_file, 'rb') as f:
+                    audio_bytes = f.read()
+
+                cached_responses[key] = {
+                    'keywords': qa['keywords'],
+                    'response': qa['response'],
+                    'audio': audio_bytes
+                }
+                loaded_count += 1
+                print(f"[Cache] ✅ Loaded from disk: {key}")
+            except Exception as e:
+                print(f"[Cache] ⚠️  Failed to load {key}: {e}")
+
+    if loaded_count > 0:
+        print(f"[Cache] Loaded {loaded_count}/{len(common_qa)} responses from disk\n")
+        return loaded_count == len(common_qa)
+    else:
+        print(f"[Cache] No cached files found on disk\n")
+        return False
+
 
 def generate_cached_responses():
     """
@@ -70,7 +128,7 @@ def generate_cached_responses():
             'response': "TEMCO is headquartered in Oklahoma City."
         },
         'owner': {
-            'keywords': ['owner', 'who owns', 'mark'],
+            'keywords': ['owner', 'who owns', 'mark', 'who is the'],
             'response': "The owner of TEMCO is Mark Hayworth."
         },
         'contact': {
@@ -80,7 +138,14 @@ def generate_cached_responses():
     }
 
     try:
+        # Check if ElevenLabs is configured
+        if not Config.ELEVENLABS_API_KEY:
+            print(f"[Cache] ❌ ELEVENLABS_API_KEY not configured!")
+            print(f"[Cache] Cache generation skipped - responses will be slow\n")
+            return False
+
         # Create temporary ElevenLabs client
+        print(f"[Cache] Creating ElevenLabs client...")
         tts = ElevenLabsClient()
 
         # Generate audio for each response
@@ -88,6 +153,7 @@ def generate_cached_responses():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
+        success_count = 0
         for key, qa in common_qa.items():
             try:
                 print(f"[Cache] Generating: {qa['response']}")
@@ -99,20 +165,31 @@ def generate_cached_responses():
                         'response': qa['response'],
                         'audio': audio_bytes
                     }
-                    print(f"[Cache] ✅ Cached: {key}")
+
+                    # Save to disk for future use
+                    cache_file = os.path.join(CACHE_DIR, f"{key}.ulaw")
+                    with open(cache_file, 'wb') as f:
+                        f.write(audio_bytes)
+
+                    success_count += 1
+                    print(f"[Cache] ✅ Cached: {key} ({len(audio_bytes)} bytes)")
                 else:
-                    print(f"[Cache] ⚠️  Failed: {key}")
+                    print(f"[Cache] ⚠️  Failed: {key} (no audio returned)")
 
             except Exception as e:
-                print(f"[Cache] Error caching {key}: {e}")
+                print(f"[Cache] ❌ Error caching {key}: {e}")
+                import traceback
+                traceback.print_exc()
 
         loop.close()
 
-        print(f"[Cache] ✅ Cached {len(cached_responses)} responses\n")
-        return True
+        print(f"[Cache] ✅ Successfully cached {success_count}/{len(common_qa)} responses\n")
+        return success_count > 0
 
     except Exception as e:
         print(f"[Cache] ❌ Error generating cached responses: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
@@ -919,12 +996,20 @@ if __name__ == "__main__":
     else:
         print(f"⚠️ Greeting audio generation failed - will use Twilio TTS fallback\n")
 
-    # Generate cached responses for common questions
+    # Load or generate cached responses for common questions
     print("="*80)
-    generate_cached_responses()
+    cached_loaded = load_cached_responses_from_disk()
+    if not cached_loaded:
+        print("[Cache] No cache found - generating fresh responses...")
+        generate_cached_responses()
+    else:
+        print("[Cache] ✅ All responses loaded from disk - instant startup!\n")
     print("="*80 + "\n")
 
-    print("🚀 Server ready - all optimizations active!\n")
+    if cached_responses:
+        print(f"🚀 Server ready - all optimizations active! ({len(cached_responses)} cached responses)\n")
+    else:
+        print(f"⚠️  Server ready - but cache failed. Responses will be SLOW.\n")
 
     from werkzeug.serving import run_simple
     run_simple('0.0.0.0', Config.PORT, app, use_reloader=False, threaded=True)

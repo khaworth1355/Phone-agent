@@ -203,25 +203,38 @@ def check_cached_response(user_text):
     Returns:
         dict with 'audio' and 'text' if match found, None otherwise
     """
-    if not user_text or not cached_responses:
+    print(f"\n[Cache Debug] Checking cache for: '{user_text}'")
+    print(f"[Cache Debug] Cache has {len(cached_responses)} responses loaded")
+
+    if not user_text:
+        print(f"[Cache Debug] ❌ No user text provided")
+        return None
+
+    if not cached_responses:
+        print(f"[Cache Debug] ❌ Cache is empty!")
         return None
 
     text_lower = user_text.lower()
+    print(f"[Cache Debug] Lowercased text: '{text_lower}'")
 
     # Check each cached response
     for key, cached in cached_responses.items():
         # Count keyword matches
-        matches = sum(1 for keyword in cached['keywords'] if keyword in text_lower)
+        matched_keywords = [keyword for keyword in cached['keywords'] if keyword in text_lower]
+        matches = len(matched_keywords)
+
+        print(f"[Cache Debug] Testing '{key}': {matches} matches {matched_keywords}")
 
         # If multiple keywords match, likely a match
         if matches >= 2:
-            print(f"[Cache] 🎯 Match found: {key}")
+            print(f"[Cache] 🎯 Match found: {key} (matched: {matched_keywords})")
             return {
                 'audio': cached['audio'],
                 'text': cached['response'],
                 'transfer': False
             }
 
+    print(f"[Cache Debug] ❌ No match found (need 2+ keyword matches)\n")
     return None
 
 
@@ -926,16 +939,30 @@ def deepgram_worker(session_id, call_sid):
 
                     # Check if user has paused speaking
                     if conv_mgr.check_for_pause():
+                        response_start_time = time.time()
                         user_text = conv_mgr.get_user_text()
+                        print(f"\n[TIMING] Response generation starting for: '{user_text}'")
 
                         # PRIORITY 1: Check cached responses (instant)
+                        cache_check_start = time.time()
                         cached_result = check_cached_response(user_text)
+                        cache_check_duration = time.time() - cache_check_start
+                        print(f"[TIMING] Cache check took: {cache_check_duration:.3f}s")
+
                         if cached_result:
                             print(f"[Conversation] 💨 Using cached response!")
                             conv_mgr.start_ai_response()
+
+                            audio_send_start = time.time()
                             send_audio_to_twilio(call_sid, cached_result['audio'])
+                            audio_send_duration = time.time() - audio_send_start
+                            print(f"[TIMING] Audio send took: {audio_send_duration:.3f}s")
+
                             conv_mgr.finish_ai_response(cached_result['text'])
                             call_manager.add_transcript(call_sid, cached_result['text'], is_final=True, speaker='AI')
+
+                            total_duration = time.time() - response_start_time
+                            print(f"[TIMING] ✅ Total cached response time: {total_duration:.3f}s\n")
 
                             # Clear predictive response if any
                             predictive_response_data['result'] = None
@@ -947,7 +974,12 @@ def deepgram_worker(session_id, call_sid):
 
                             # Play the pre-generated audio
                             conv_mgr.start_ai_response()
+
+                            audio_send_start = time.time()
                             send_audio_to_twilio(call_sid, result['audio'])
+                            audio_send_duration = time.time() - audio_send_start
+                            print(f"[TIMING] Audio send took: {audio_send_duration:.3f}s")
+
                             conv_mgr.finish_ai_response(result['text'])
                             call_manager.add_transcript(call_sid, result['text'], is_final=True, speaker='AI')
 
@@ -959,10 +991,19 @@ def deepgram_worker(session_id, call_sid):
                             # Clear predictive response
                             predictive_response_data['result'] = None
 
+                            total_duration = time.time() - response_start_time
+                            print(f"[TIMING] ✅ Total predictive response time: {total_duration:.3f}s\n")
+
                         else:
                             # No predictive response ready, generate normally
-                            print(f"[Conversation] Triggering AI response...")
+                            print(f"[Conversation] Triggering AI response (no cache/predictive match)...")
+                            ai_start = time.time()
                             await handle_ai_response(session_id)
+                            ai_duration = time.time() - ai_start
+
+                            total_duration = time.time() - response_start_time
+                            print(f"[TIMING] AI response generation took: {ai_duration:.3f}s")
+                            print(f"[TIMING] ✅ Total response time: {total_duration:.3f}s\n")
 
             except Exception as e:
                 print(f"[Deepgram] Error: {e}")

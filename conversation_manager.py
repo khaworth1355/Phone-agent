@@ -131,7 +131,8 @@ class ConversationManager:
 
         if time_since_last_speech >= self.pause_threshold:
             print(f"\n[ConversationManager] ✅ PAUSE DETECTED ({time_since_last_speech:.1f}s)")
-            print(f"[ConversationManager] User said: '{self.current_user_text}'\n")
+            print(f"[ConversationManager] User said: '{self.current_user_text}'")
+            print(f"[ConversationManager] Text length: {len(self.current_user_text)} chars\n")
 
             # Trigger AI response
             self.state = ConversationState.AI_THINKING

@@ -332,11 +332,11 @@ def voice():
         print(f"[Voice] ⚠️ ElevenLabs greeting not found, using Twilio TTS")
         response.say("TEMCO, how can I help you?", voice='Polly.Joanna')
 
-    # Start media stream with inbound audio only (prevents AI echo)
+    # Start media stream with bidirectional audio (allows sending audio back via WebSocket)
     start = Start()
     stream = start.stream(url=Config.WEBSOCKET_URL)
-    # Only capture inbound audio (caller's voice) to prevent echo of AI responses
-    stream.parameter(name='track', value='inbound_track')
+    # Use both tracks - we have echo filtering to prevent AI voice from being processed
+    stream.parameter(name='track', value='both_tracks')
     response.append(start)
 
     # Keep call open for conversation (10 minutes max)
@@ -354,11 +354,11 @@ def continue_stream():
     # Generate TwiML to re-establish the stream
     response = VoiceResponse()
 
-    # Re-establish media stream with inbound audio only (prevents AI echo)
+    # Re-establish media stream with bidirectional audio (allows sending audio back via WebSocket)
     start = Start()
     stream = start.stream(url=Config.WEBSOCKET_URL)
-    # Only capture inbound audio (caller's voice) to prevent echo of AI responses
-    stream.parameter(name='track', value='inbound_track')
+    # Use both tracks - we have echo filtering to prevent AI voice from being processed
+    stream.parameter(name='track', value='both_tracks')
     response.append(start)
 
     # Keep call open for more conversation (10 minutes)
@@ -553,11 +553,13 @@ def send_audio_via_websocket(session_id, audio_bytes):
             payload = base64.b64encode(chunk).decode('utf-8')
 
             # Send media message to Twilio
+            # NOTE: This may not work - Twilio Media Streams may not support sending audio back
             message = json.dumps({
                 "event": "media",
                 "streamSid": stream_sid,
                 "media": {
-                    "payload": payload
+                    "payload": payload,
+                    "track": "outbound"  # Specify outbound track
                 }
             })
 

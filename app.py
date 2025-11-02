@@ -332,11 +332,11 @@ def voice():
         print(f"[Voice] ⚠️ ElevenLabs greeting not found, using Twilio TTS")
         response.say("TEMCO, how can I help you?", voice='Polly.Joanna')
 
-    # Start media stream with bidirectional audio (allows sending audio back via WebSocket)
+    # Start media stream with inbound audio only (prevents AI echo)
     start = Start()
     stream = start.stream(url=Config.WEBSOCKET_URL)
-    # Use both tracks - we have echo filtering to prevent AI voice from being processed
-    stream.parameter(name='track', value='both_tracks')
+    # Only capture inbound audio (caller's voice) to prevent echo of AI responses
+    stream.parameter(name='track', value='inbound_track')
     response.append(start)
 
     # Keep call open for conversation (10 minutes max)
@@ -354,11 +354,11 @@ def continue_stream():
     # Generate TwiML to re-establish the stream
     response = VoiceResponse()
 
-    # Re-establish media stream with bidirectional audio (allows sending audio back via WebSocket)
+    # Re-establish media stream with inbound audio only (prevents AI echo)
     start = Start()
     stream = start.stream(url=Config.WEBSOCKET_URL)
-    # Use both tracks - we have echo filtering to prevent AI voice from being processed
-    stream.parameter(name='track', value='both_tracks')
+    # Only capture inbound audio (caller's voice) to prevent echo of AI responses
+    stream.parameter(name='track', value='inbound_track')
     response.append(start)
 
     # Keep call open for more conversation (10 minutes)
@@ -956,12 +956,7 @@ def deepgram_worker(session_id, call_sid):
                             conv_mgr.start_ai_response()
 
                             audio_send_start = time.time()
-                            # Use WebSocket streaming for instant delivery (no stream interruption)
-                            success = send_audio_via_websocket(session_id, cached_result['audio'])
-                            if not success:
-                                # Fallback to REST API if WebSocket fails
-                                print(f"[Conversation] ⚠️ WebSocket failed, falling back to REST API")
-                                send_audio_to_twilio(call_sid, cached_result['audio'])
+                            send_audio_to_twilio(call_sid, cached_result['audio'])
                             audio_send_duration = time.time() - audio_send_start
                             print(f"[TIMING] Audio send took: {audio_send_duration:.3f}s")
 
@@ -983,12 +978,7 @@ def deepgram_worker(session_id, call_sid):
                             conv_mgr.start_ai_response()
 
                             audio_send_start = time.time()
-                            # Use WebSocket streaming for instant delivery (no stream interruption)
-                            success = send_audio_via_websocket(session_id, result['audio'])
-                            if not success:
-                                # Fallback to REST API if WebSocket fails
-                                print(f"[Conversation] ⚠️ WebSocket failed, falling back to REST API")
-                                send_audio_to_twilio(call_sid, result['audio'])
+                            send_audio_to_twilio(call_sid, result['audio'])
                             audio_send_duration = time.time() - audio_send_start
                             print(f"[TIMING] Audio send took: {audio_send_duration:.3f}s")
 

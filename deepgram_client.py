@@ -61,7 +61,7 @@ class DeepgramClient:
 
             self.connection.registerHandler(
                 self.connection.event.CLOSE,
-                lambda: print("[Deepgram Event] Connection closed")
+                lambda _: print("[Deepgram Event] Connection closed")
             )
 
             self.connected = True
@@ -112,20 +112,18 @@ class DeepgramClient:
             # Parse message
             data = json.loads(message) if isinstance(message, str) else message
 
-            # Check message type - only process transcript messages
-            if 'type' in data:
-                # This is an event message (SpeechStarted, etc.), not a transcript
-                print(f"[Deepgram] Event: {data.get('type')} at {data.get('timestamp', 'unknown')}s")
-                return
-
-            # Extract transcript from transcript messages
+            # Check if this is a transcript message (has 'channel' key)
             if 'channel' in data:
+                # This is a transcript message
                 alternatives = data['channel']['alternatives']
                 if alternatives and len(alternatives) > 0:
                     transcript = alternatives[0]['transcript']
                     if transcript:
                         is_final = data.get('is_final', False)
                         self.callback(transcript, is_final)
+            elif 'type' in data:
+                # This is an event message (SpeechStarted, Metadata, etc.)
+                print(f"[Deepgram] Event: {data.get('type')} at {data.get('timestamp', 'unknown')}s")
 
         except Exception as e:
             print(f"[Deepgram] Error processing message: {e}")

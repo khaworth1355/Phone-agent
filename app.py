@@ -332,6 +332,9 @@ def voice():
         print(f"[Voice] ⚠️ ElevenLabs greeting not found, using Twilio TTS")
         response.say("TEMCO, how can I help you?", voice='Polly.Joanna')
 
+    # Add brief pause after greeting to let Deepgram reset
+    response.pause(length=0.5)
+
     # Start media stream with inbound audio only (prevents AI echo)
     start = Start()
     stream = start.stream(url=Config.WEBSOCKET_URL)

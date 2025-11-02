@@ -36,7 +36,9 @@ class DeepgramClient:
                 'model': 'nova-2',
                 'encoding': 'mulaw',
                 'sample_rate': 8000,
-                'channels': 1
+                'channels': 1,
+                'smart_format': False,  # Disable smart formatting for speed
+                'endpointing': 10,  # Detect end of speech faster (milliseconds of silence)
             }
 
             self.connection = await self.deepgram.transcription.live(options)

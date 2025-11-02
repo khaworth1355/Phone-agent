@@ -38,7 +38,8 @@ class DeepgramClient:
                 'sample_rate': 8000,
                 'channels': 1,
                 'smart_format': False,  # Disable smart formatting for speed
-                'endpointing': 10,  # Detect end of speech faster (milliseconds of silence)
+                'endpointing': 100,  # Milliseconds of silence before finalizing (lower = faster)
+                'vad_events': True,  # Get voice activity detection events
             }
 
             self.connection = await self.deepgram.transcription.live(options)
@@ -52,6 +53,15 @@ class DeepgramClient:
             self.connection.registerHandler(
                 self.connection.event.ERROR,
                 self._on_error
+            )
+
+            # Log all events for debugging
+            def log_event(event):
+                print(f"[Deepgram Event] {event}")
+
+            self.connection.registerHandler(
+                self.connection.event.CLOSE,
+                lambda: print("[Deepgram Event] Connection closed")
             )
 
             self.connected = True
@@ -70,9 +80,11 @@ class DeepgramClient:
                 self.audio_sent_count += 1
                 self.total_bytes_sent += len(audio_bytes)
 
-                # Log first few sends
+                # Log first few sends with audio level
                 if self.audio_sent_count <= 3:
-                    print(f"[Deepgram] Sent audio chunk #{self.audio_sent_count}, size: {len(audio_bytes)} bytes")
+                    # Calculate rough audio level (for mulaw)
+                    avg_level = sum(audio_bytes) / len(audio_bytes) if audio_bytes else 0
+                    print(f"[Deepgram] Sent audio chunk #{self.audio_sent_count}, size: {len(audio_bytes)} bytes, avg: {avg_level:.0f}")
                 elif self.audio_sent_count == 50:
                     print(f"[Deepgram] Sent 50 chunks, total: {self.total_bytes_sent} bytes")
 

@@ -38,8 +38,8 @@ class DeepgramClient:
                 'sample_rate': 8000,
                 'channels': 1,
                 'smart_format': False,  # Disable smart formatting for speed
-                'endpointing': 100,  # Milliseconds of silence before finalizing (lower = faster)
-                'vad_events': True,  # Get voice activity detection events
+                # Removed endpointing parameter - was causing excessive buffering delays
+                # Using Deepgram's default endpointing (~1000ms) for optimal speed
             }
 
             self.connection = await self.deepgram.transcription.live(options)
@@ -112,7 +112,13 @@ class DeepgramClient:
             # Parse message
             data = json.loads(message) if isinstance(message, str) else message
 
-            # Extract transcript
+            # Check message type - only process transcript messages
+            if 'type' in data:
+                # This is an event message (SpeechStarted, etc.), not a transcript
+                print(f"[Deepgram] Event: {data.get('type')} at {data.get('timestamp', 'unknown')}s")
+                return
+
+            # Extract transcript from transcript messages
             if 'channel' in data:
                 alternatives = data['channel']['alternatives']
                 if alternatives and len(alternatives) > 0:

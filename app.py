@@ -47,6 +47,64 @@ call_ai_speaking_until = {}  # call_sid -> timestamp when AI will stop speaking
 # Cached responses for common questions (populated at startup)
 cached_responses = {}
 
+# Cache persistence directory
+CACHE_DIR = os.path.join(os.path.dirname(__file__), 'cached_audio')
+os.makedirs(CACHE_DIR, exist_ok=True)
+
+
+def load_cached_responses_from_disk():
+    """Load cached responses from disk if they exist"""
+    print("[Cache] Checking for saved cache files...")
+
+    # Define common Q&A pairs (metadata)
+    common_qa = {
+        'price_t5': {
+            'keywords': ['how much', 'price', 'cost', 't5', 't 5', 'storm'],
+            'response': "The T5 Storm costs $10,000."
+        },
+        'price_t3': {
+            'keywords': ['how much', 'price', 'cost', 't3', 't 3', 'lightning'],
+            'response': "The T3 Lightning costs $8,000."
+        },
+        'location': {
+            'keywords': ['where', 'located', 'location', 'headquarter'],
+            'response': "TEMCO is headquartered in Oklahoma City."
+        },
+        'owner': {
+            'keywords': ['owner', 'who owns', 'mark', 'who is the'],
+            'response': "The owner of TEMCO is Mark Hayworth."
+        },
+        'contact': {
+            'keywords': ['phone', 'number', 'contact', 'reach', 'call'],
+            'response': "You can reach TEMCO at 800-245-1869."
+        }
+    }
+
+    loaded_count = 0
+    for key, qa in common_qa.items():
+        cache_file = os.path.join(CACHE_DIR, f"{key}.ulaw")
+        if os.path.exists(cache_file):
+            try:
+                with open(cache_file, 'rb') as f:
+                    audio_bytes = f.read()
+
+                cached_responses[key] = {
+                    'keywords': qa['keywords'],
+                    'response': qa['response'],
+                    'audio': audio_bytes
+                }
+                loaded_count += 1
+                print(f"[Cache] ✅ Loaded from disk: {key}")
+            except Exception as e:
+                print(f"[Cache] ⚠️  Failed to load {key}: {e}")
+
+    if loaded_count > 0:
+        print(f"[Cache] Loaded {loaded_count}/{len(common_qa)} responses from disk\n")
+        return loaded_count == len(common_qa)
+    else:
+        print(f"[Cache] No cached files found on disk\n")
+        return False
+
 
 def generate_cached_responses():
     """
@@ -70,7 +128,7 @@ def generate_cached_responses():
             'response': "TEMCO is headquartered in Oklahoma City."
         },
         'owner': {
-            'keywords': ['owner', 'who owns', 'mark'],
+            'keywords': ['owner', 'who owns', 'mark', 'who is the'],
             'response': "The owner of TEMCO is Mark Hayworth."
         },
         'contact': {
@@ -80,7 +138,14 @@ def generate_cached_responses():
     }
 
     try:
+        # Check if ElevenLabs is configured
+        if not Config.ELEVENLABS_API_KEY:
+            print(f"[Cache] ❌ ELEVENLABS_API_KEY not configured!")
+            print(f"[Cache] Cache generation skipped - responses will be slow\n")
+            return False
+
         # Create temporary ElevenLabs client
+        print(f"[Cache] Creating ElevenLabs client...")
         tts = ElevenLabsClient()
 
         # Generate audio for each response
@@ -88,6 +153,7 @@ def generate_cached_responses():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
 
+        success_count = 0
         for key, qa in common_qa.items():
             try:
                 print(f"[Cache] Generating: {qa['response']}")
@@ -99,20 +165,31 @@ def generate_cached_responses():
                         'response': qa['response'],
                         'audio': audio_bytes
                     }
-                    print(f"[Cache] ✅ Cached: {key}")
+
+                    # Save to disk for future use
+                    cache_file = os.path.join(CACHE_DIR, f"{key}.ulaw")
+                    with open(cache_file, 'wb') as f:
+                        f.write(audio_bytes)
+
+                    success_count += 1
+                    print(f"[Cache] ✅ Cached: {key} ({len(audio_bytes)} bytes)")
                 else:
-                    print(f"[Cache] ⚠️  Failed: {key}")
+                    print(f"[Cache] ⚠️  Failed: {key} (no audio returned)")
 
             except Exception as e:
-                print(f"[Cache] Error caching {key}: {e}")
+                print(f"[Cache] ❌ Error caching {key}: {e}")
+                import traceback
+                traceback.print_exc()
 
         loop.close()
 
-        print(f"[Cache] ✅ Cached {len(cached_responses)} responses\n")
-        return True
+        print(f"[Cache] ✅ Successfully cached {success_count}/{len(common_qa)} responses\n")
+        return success_count > 0
 
     except Exception as e:
         print(f"[Cache] ❌ Error generating cached responses: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
@@ -126,25 +203,38 @@ def check_cached_response(user_text):
     Returns:
         dict with 'audio' and 'text' if match found, None otherwise
     """
-    if not user_text or not cached_responses:
+    print(f"\n[Cache Debug] Checking cache for: '{user_text}'")
+    print(f"[Cache Debug] Cache has {len(cached_responses)} responses loaded")
+
+    if not user_text:
+        print(f"[Cache Debug] ❌ No user text provided")
+        return None
+
+    if not cached_responses:
+        print(f"[Cache Debug] ❌ Cache is empty!")
         return None
 
     text_lower = user_text.lower()
+    print(f"[Cache Debug] Lowercased text: '{text_lower}'")
 
     # Check each cached response
     for key, cached in cached_responses.items():
         # Count keyword matches
-        matches = sum(1 for keyword in cached['keywords'] if keyword in text_lower)
+        matched_keywords = [keyword for keyword in cached['keywords'] if keyword in text_lower]
+        matches = len(matched_keywords)
+
+        print(f"[Cache Debug] Testing '{key}': {matches} matches {matched_keywords}")
 
         # If multiple keywords match, likely a match
         if matches >= 2:
-            print(f"[Cache] 🎯 Match found: {key}")
+            print(f"[Cache] 🎯 Match found: {key} (matched: {matched_keywords})")
             return {
                 'audio': cached['audio'],
                 'text': cached['response'],
                 'transfer': False
             }
 
+    print(f"[Cache Debug] ❌ No match found (need 2+ keyword matches)\n")
     return None
 
 
@@ -241,6 +331,9 @@ def voice():
         # Fallback to Twilio TTS if ElevenLabs greeting doesn't exist
         print(f"[Voice] ⚠️ ElevenLabs greeting not found, using Twilio TTS")
         response.say("TEMCO, how can I help you?", voice='Polly.Joanna')
+
+    # Add brief pause after greeting to let Deepgram reset
+    response.pause(length=0.5)
 
     # Start media stream with inbound audio only (prevents AI echo)
     start = Start()
@@ -463,11 +556,13 @@ def send_audio_via_websocket(session_id, audio_bytes):
             payload = base64.b64encode(chunk).decode('utf-8')
 
             # Send media message to Twilio
+            # NOTE: This may not work - Twilio Media Streams may not support sending audio back
             message = json.dumps({
                 "event": "media",
                 "streamSid": stream_sid,
                 "media": {
-                    "payload": payload
+                    "payload": payload,
+                    "track": "outbound"  # Specify outbound track
                 }
             })
 
@@ -836,8 +931,9 @@ def deepgram_worker(session_id, call_sid):
                     if audio_count == 1:
                         print("[Deepgram] Receiving audio...\n")
 
-                    # Yield to event loop to process sends
-                    await asyncio.sleep(0)
+                    # CRITICAL FIX: Pace audio at 20ms intervals (mulaw 160 bytes = 20ms)
+                    # Sending too fast causes Deepgram to buffer heavily and delay responses
+                    await asyncio.sleep(0.02)
 
                 except Empty:
                     await asyncio.sleep(0.01)
@@ -849,16 +945,30 @@ def deepgram_worker(session_id, call_sid):
 
                     # Check if user has paused speaking
                     if conv_mgr.check_for_pause():
+                        response_start_time = time.time()
                         user_text = conv_mgr.get_user_text()
+                        print(f"\n[TIMING] Response generation starting for: '{user_text}'")
 
                         # PRIORITY 1: Check cached responses (instant)
+                        cache_check_start = time.time()
                         cached_result = check_cached_response(user_text)
+                        cache_check_duration = time.time() - cache_check_start
+                        print(f"[TIMING] Cache check took: {cache_check_duration:.3f}s")
+
                         if cached_result:
                             print(f"[Conversation] 💨 Using cached response!")
                             conv_mgr.start_ai_response()
+
+                            audio_send_start = time.time()
                             send_audio_to_twilio(call_sid, cached_result['audio'])
+                            audio_send_duration = time.time() - audio_send_start
+                            print(f"[TIMING] Audio send took: {audio_send_duration:.3f}s")
+
                             conv_mgr.finish_ai_response(cached_result['text'])
                             call_manager.add_transcript(call_sid, cached_result['text'], is_final=True, speaker='AI')
+
+                            total_duration = time.time() - response_start_time
+                            print(f"[TIMING] ✅ Total cached response time: {total_duration:.3f}s\n")
 
                             # Clear predictive response if any
                             predictive_response_data['result'] = None
@@ -870,7 +980,12 @@ def deepgram_worker(session_id, call_sid):
 
                             # Play the pre-generated audio
                             conv_mgr.start_ai_response()
+
+                            audio_send_start = time.time()
                             send_audio_to_twilio(call_sid, result['audio'])
+                            audio_send_duration = time.time() - audio_send_start
+                            print(f"[TIMING] Audio send took: {audio_send_duration:.3f}s")
+
                             conv_mgr.finish_ai_response(result['text'])
                             call_manager.add_transcript(call_sid, result['text'], is_final=True, speaker='AI')
 
@@ -882,10 +997,19 @@ def deepgram_worker(session_id, call_sid):
                             # Clear predictive response
                             predictive_response_data['result'] = None
 
+                            total_duration = time.time() - response_start_time
+                            print(f"[TIMING] ✅ Total predictive response time: {total_duration:.3f}s\n")
+
                         else:
                             # No predictive response ready, generate normally
-                            print(f"[Conversation] Triggering AI response...")
+                            print(f"[Conversation] Triggering AI response (no cache/predictive match)...")
+                            ai_start = time.time()
                             await handle_ai_response(session_id)
+                            ai_duration = time.time() - ai_start
+
+                            total_duration = time.time() - response_start_time
+                            print(f"[TIMING] AI response generation took: {ai_duration:.3f}s")
+                            print(f"[TIMING] ✅ Total response time: {total_duration:.3f}s\n")
 
             except Exception as e:
                 print(f"[Deepgram] Error: {e}")
@@ -919,12 +1043,20 @@ if __name__ == "__main__":
     else:
         print(f"⚠️ Greeting audio generation failed - will use Twilio TTS fallback\n")
 
-    # Generate cached responses for common questions
+    # Load or generate cached responses for common questions
     print("="*80)
-    generate_cached_responses()
+    cached_loaded = load_cached_responses_from_disk()
+    if not cached_loaded:
+        print("[Cache] No cache found - generating fresh responses...")
+        generate_cached_responses()
+    else:
+        print("[Cache] ✅ All responses loaded from disk - instant startup!\n")
     print("="*80 + "\n")
 
-    print("🚀 Server ready - all optimizations active!\n")
+    if cached_responses:
+        print(f"🚀 Server ready - all optimizations active! ({len(cached_responses)} cached responses)\n")
+    else:
+        print(f"⚠️  Server ready - but cache failed. Responses will be SLOW.\n")
 
     from werkzeug.serving import run_simple
     run_simple('0.0.0.0', Config.PORT, app, use_reloader=False, threaded=True)

@@ -931,8 +931,9 @@ def deepgram_worker(session_id, call_sid):
                     if audio_count == 1:
                         print("[Deepgram] Receiving audio...\n")
 
-                    # Yield to event loop to process sends
-                    await asyncio.sleep(0)
+                    # CRITICAL FIX: Pace audio at 20ms intervals (mulaw 160 bytes = 20ms)
+                    # Sending too fast causes Deepgram to buffer heavily and delay responses
+                    await asyncio.sleep(0.02)
 
                 except Empty:
                     await asyncio.sleep(0.01)

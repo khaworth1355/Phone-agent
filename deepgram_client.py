@@ -36,10 +36,7 @@ class DeepgramClient:
                 'model': 'nova-2',
                 'encoding': 'mulaw',
                 'sample_rate': 8000,
-                'channels': 1,
-                'smart_format': False,  # Disable smart formatting for speed
-                # Removed endpointing parameter - was causing excessive buffering delays
-                # Using Deepgram's default endpointing (~1000ms) for optimal speed
+                'channels': 1
             }
 
             self.connection = await self.deepgram.transcription.live(options)
@@ -53,15 +50,6 @@ class DeepgramClient:
             self.connection.registerHandler(
                 self.connection.event.ERROR,
                 self._on_error
-            )
-
-            # Log all events for debugging
-            def log_event(event):
-                print(f"[Deepgram Event] {event}")
-
-            self.connection.registerHandler(
-                self.connection.event.CLOSE,
-                lambda _: print("[Deepgram Event] Connection closed")
             )
 
             self.connected = True
@@ -80,11 +68,9 @@ class DeepgramClient:
                 self.audio_sent_count += 1
                 self.total_bytes_sent += len(audio_bytes)
 
-                # Log first few sends with audio level
+                # Log first few sends
                 if self.audio_sent_count <= 3:
-                    # Calculate rough audio level (for mulaw)
-                    avg_level = sum(audio_bytes) / len(audio_bytes) if audio_bytes else 0
-                    print(f"[Deepgram] Sent audio chunk #{self.audio_sent_count}, size: {len(audio_bytes)} bytes, avg: {avg_level:.0f}")
+                    print(f"[Deepgram] Sent audio chunk #{self.audio_sent_count}, size: {len(audio_bytes)} bytes")
                 elif self.audio_sent_count == 50:
                     print(f"[Deepgram] Sent 50 chunks, total: {self.total_bytes_sent} bytes")
 
@@ -112,18 +98,14 @@ class DeepgramClient:
             # Parse message
             data = json.loads(message) if isinstance(message, str) else message
 
-            # Check if this is a transcript message (has 'channel' key)
+            # Extract transcript
             if 'channel' in data:
-                # This is a transcript message
                 alternatives = data['channel']['alternatives']
                 if alternatives and len(alternatives) > 0:
                     transcript = alternatives[0]['transcript']
                     if transcript:
                         is_final = data.get('is_final', False)
                         self.callback(transcript, is_final)
-            elif 'type' in data:
-                # This is an event message (SpeechStarted, Metadata, etc.)
-                print(f"[Deepgram] Event: {data.get('type')} at {data.get('timestamp', 'unknown')}s")
 
         except Exception as e:
             print(f"[Deepgram] Error processing message: {e}")

@@ -93,7 +93,8 @@ class DeepgramClient:
 
     def _on_message(self, message):
         """Handle transcript messages"""
-        print(f"[Deepgram] Message received: {message}")
+        # PERFORMANCE FIX: Removed verbose logging that blocks event loop on server
+        # print(f"[Deepgram] Message received: {message}")
         try:
             # Parse message
             data = json.loads(message) if isinstance(message, str) else message

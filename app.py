@@ -172,25 +172,105 @@ def generate_cached_responses():
                         f.write(audio_bytes)
 
                     success_count += 1
-                    print(f"[Cache] ✅ Cached: {key} ({len(audio_bytes)} bytes)")
+                    print(f"[Cache] [OK] Cached: {key} ({len(audio_bytes)} bytes)")
                 else:
-                    print(f"[Cache] ⚠️  Failed: {key} (no audio returned)")
+                    print(f"[Cache] [WARNING] Failed: {key} (no audio returned)")
 
             except Exception as e:
-                print(f"[Cache] ❌ Error caching {key}: {e}")
+                print(f"[Cache] [ERROR] Error caching {key}: {e}")
                 import traceback
                 traceback.print_exc()
 
         loop.close()
 
-        print(f"[Cache] ✅ Successfully cached {success_count}/{len(common_qa)} responses\n")
+        print(f"[Cache] [OK] Successfully cached {success_count}/{len(common_qa)} responses\n")
         return success_count > 0
 
     except Exception as e:
-        print(f"[Cache] ❌ Error generating cached responses: {e}")
+        print(f"[Cache] [ERROR] Error generating cached responses: {e}")
         import traceback
         traceback.print_exc()
         return False
+
+
+def parse_address(address_text):
+    """
+    Parse address from natural language into components
+
+    Args:
+        address_text: Address string from user
+
+    Returns:
+        Dict with keys: street, city, state, zip
+    """
+    import re
+
+    print(f"[Address Parser] Parsing: '{address_text}'")
+
+    # Try to extract zip code (5 digits, possibly with dash and 4 more)
+    zip_match = re.search(r'\b(\d{5})(?:-\d{4})?\b', address_text)
+    zip_code = zip_match.group(1) if zip_match else ''
+
+    # Try to extract state (2 letter code - uppercase)
+    state_match = re.search(r'\b([A-Z]{2})\b', address_text.upper())
+    state = state_match.group(1) if state_match else ''
+
+    # If no 2-letter state found, try common state names
+    if not state:
+        state_names = {
+            'oklahoma': 'OK', 'texas': 'TX', 'california': 'CA', 'kansas': 'KS',
+            'missouri': 'MO', 'arkansas': 'AR', 'new mexico': 'NM', 'colorado': 'CO'
+        }
+        text_lower = address_text.lower()
+        for full_name, abbrev in state_names.items():
+            if full_name in text_lower:
+                state = abbrev
+                break
+
+    # Remove zip and state from text to isolate street and city
+    remaining = address_text
+    if zip_code:
+        remaining = remaining.replace(zip_code, '')
+    if state:
+        # Remove state abbreviation
+        remaining = re.sub(r'\b' + state + r'\b', '', remaining, flags=re.IGNORECASE)
+
+    # Clean up punctuation and extra spaces
+    remaining = remaining.replace(',', ' ').strip()
+    remaining = re.sub(r'\s+', ' ', remaining)
+
+    # Split remaining text - usually: street, city
+    # Common patterns: "123 Main St Oklahoma City" or "123 Main Street OKC"
+    parts = remaining.split()
+
+    # Heuristic: city is usually 1-2 words at the end, street is the rest
+    if len(parts) >= 3:
+        # Assume last 1-2 words are city
+        if len(parts) >= 4:
+            street = ' '.join(parts[:-2])
+            city = ' '.join(parts[-2:])
+        else:
+            street = ' '.join(parts[:-1])
+            city = parts[-1]
+    elif len(parts) == 2:
+        street = parts[0]
+        city = parts[1]
+    elif len(parts) == 1:
+        street = parts[0]
+        city = ''
+    else:
+        street = ''
+        city = ''
+
+    result = {
+        'street': street.strip(),
+        'city': city.strip(),
+        'state': state,
+        'zip': zip_code
+    }
+
+    print(f"[Address Parser] Result: {result}")
+    return result
 
 
 def check_cached_response(user_text):
@@ -737,27 +817,113 @@ async def handle_ai_response(session_id):
         # Check for detergent order markers
         collect_name = '[COLLECT_DETERGENT_NAME]' in ai_text
         collect_phone = '[COLLECT_DETERGENT_PHONE]' in ai_text
+        collect_address = '[COLLECT_DETERGENT_ADDRESS]' in ai_text
+        collect_payment = '[COLLECT_DETERGENT_PAYMENT]' in ai_text
         detergent_complete = '[DETERGENT_ORDER_COMPLETE]' in ai_text
 
         # Handle detergent order flow
         if collect_name:
             print(f"[AI] 🧴 Starting detergent order - collecting name")
             conv_mgr.start_collecting_detergent_info()
+
         elif collect_phone:
             print(f"[AI] 🧴 Collecting phone number")
-            # Extract name from user's previous response (simple extraction)
+            # Extract name from user's previous response
             conv_mgr.set_detergent_customer_name(user_text.strip())
-        elif detergent_complete:
-            print(f"[AI] 🧴 Detergent order complete - storing phone")
-            # Extract phone from user's response
+
+        elif collect_address:
+            print(f"[AI] 🧴 Collecting shipping address")
+            # Extract phone from user's previous response
             conv_mgr.set_detergent_customer_phone(user_text.strip())
 
-            # Log the collected information
-            order_info = conv_mgr.get_detergent_order_info()
-            print(f"[AI] 🧴 Detergent Order Info:")
-            print(f"     Name: {order_info['name']}")
-            print(f"     Phone: {order_info['phone']}")
-            print(f"     Call SID: {order_info['call_sid']}")
+        elif collect_payment:
+            print(f"[AI] 🧴 Collecting payment method")
+            # Parse address from user's previous response
+            parsed_address = parse_address(user_text.strip())
+            conv_mgr.set_detergent_address(
+                street=parsed_address['street'],
+                city=parsed_address['city'],
+                state=parsed_address['state'],
+                zip_code=parsed_address['zip']
+            )
+            print(f"[AI] 🧴 Address: {parsed_address['street']}, {parsed_address['city']}, {parsed_address['state']} {parsed_address['zip']}")
+
+        elif detergent_complete:
+            print(f"[AI] 🧴 Detergent order complete")
+
+            # Extract payment method from user's response
+            payment_method = user_text.strip()
+            conv_mgr.set_detergent_payment(payment_method)
+
+            # Get complete order data
+            order_data = conv_mgr.get_full_detergent_order()
+            print(f"[AI] 🧴 Complete Order:")
+            print(f"     Name: {order_data['name']}")
+            print(f"     Phone: {order_data['phone']}")
+            print(f"     Address: {order_data['address_street']}, {order_data['address_city']}, {order_data['address_state']} {order_data['address_zip']}")
+            print(f"     Payment: {order_data['payment_method']}")
+
+            # Save to database
+            try:
+                from database import create_order
+                order_id = create_order(order_data)
+                print(f"[AI] 🧴 Saved to database: Order ID {order_id}")
+            except Exception as e:
+                print(f"[AI] 🧴 ❌ Database save failed: {e}")
+                order_id = None
+
+            # Sync to QuickBooks (if database save succeeded)
+            if order_id:
+                try:
+                    from quickbooks_client import QuickBooksClient
+                    qb = QuickBooksClient()
+
+                    # Create/update customer
+                    qb_customer_id = qb.get_or_create_customer(
+                        name=order_data['name'],
+                        phone=order_data['phone'],
+                        address={
+                            'street': order_data['address_street'],
+                            'city': order_data['address_city'],
+                            'state': order_data['address_state'],
+                            'zip': order_data['address_zip']
+                        }
+                    )
+
+                    # Create invoice
+                    invoice = qb.create_invoice(
+                        customer_id=qb_customer_id,
+                        product_name=Config.DETERGENT_PRODUCT_NAME,
+                        quantity=1,
+                        payment_method=order_data['payment_method']
+                    )
+
+                    # Update database
+                    from database import update_sync_status
+                    update_sync_status(
+                        order_id=order_id,
+                        status='synced',
+                        qb_data={
+                            'customer_id': qb_customer_id,
+                            'invoice_id': invoice.Id,
+                            'invoice_number': invoice.DocNumber
+                        },
+                        error=None
+                    )
+
+                    print(f"[AI] 🧴 ✅ Synced to QuickBooks - Invoice #{invoice.DocNumber}")
+
+                except Exception as e:
+                    print(f"[AI] 🧴 ❌ QuickBooks sync failed: {e}")
+                    import traceback
+                    traceback.print_exc()
+
+                    # Update database with failure
+                    try:
+                        from database import update_sync_status
+                        update_sync_status(order_id=order_id, status='failed', qb_data=None, error=str(e))
+                    except:
+                        pass
 
         # Check for transfer request from Claude
         transfer_requested_by_claude = '[TRANSFER_TO_SALES]' in ai_text
@@ -769,6 +935,8 @@ async def handle_ai_response(session_id):
         spoken_text = ai_text.replace('[TRANSFER_TO_SALES]', '').strip()
         spoken_text = spoken_text.replace('[COLLECT_DETERGENT_NAME]', '').strip()
         spoken_text = spoken_text.replace('[COLLECT_DETERGENT_PHONE]', '').strip()
+        spoken_text = spoken_text.replace('[COLLECT_DETERGENT_ADDRESS]', '').strip()
+        spoken_text = spoken_text.replace('[COLLECT_DETERGENT_PAYMENT]', '').strip()
         spoken_text = spoken_text.replace('[DETERGENT_ORDER_COMPLETE]', '').strip()
 
         # If keyword detected transfer but Claude didn't trigger it, override response
@@ -1027,6 +1195,285 @@ def deepgram_worker(session_id, call_sid):
     loop.close()
 
 
+@app.route("/qb-connect")
+def qb_connect():
+    """Initiate QuickBooks OAuth flow"""
+    try:
+        from intuitlib.client import AuthClient
+        from intuitlib.enums import Scopes
+
+        auth_client = AuthClient(
+            client_id=Config.QUICKBOOKS_CLIENT_ID,
+            client_secret=Config.QUICKBOOKS_CLIENT_SECRET,
+            redirect_uri=Config.QUICKBOOKS_REDIRECT_URI,
+            environment=Config.QUICKBOOKS_ENVIRONMENT
+        )
+
+        auth_url = auth_client.get_authorization_url([Scopes.ACCOUNTING])
+
+        return f'''
+        <html>
+        <head><title>Connect to QuickBooks</title></head>
+        <body style="font-family: Arial; padding: 40px;">
+            <h1>Connect Phone Agent to QuickBooks Online</h1>
+            <p>Click the button below to authorize this app to create customers and invoices in QuickBooks.</p>
+            <p><a href="{auth_url}" style="display: inline-block; padding: 15px 30px; background: #2ca01c; color: white; text-decoration: none; border-radius: 5px; font-size: 16px;">Connect to QuickBooks</a></p>
+            <p style="color: #666; font-size: 14px;">Environment: {Config.QUICKBOOKS_ENVIRONMENT}</p>
+        </body>
+        </html>
+        '''
+    except Exception as e:
+        return f'''
+        <html>
+        <body style="font-family: Arial; padding: 40px;">
+            <h1>Error</h1>
+            <p style="color: red;">Failed to initiate QuickBooks connection: {str(e)}</p>
+            <p>Make sure QUICKBOOKS_CLIENT_ID and QUICKBOOKS_CLIENT_SECRET are set in .env</p>
+        </body>
+        </html>
+        ''', 500
+
+
+@app.route("/qb-callback")
+def qb_callback():
+    """Handle QuickBooks OAuth callback"""
+    try:
+        from intuitlib.client import AuthClient
+        import os
+
+        auth_code = request.args.get('code')
+        realm_id = request.args.get('realmId')
+        error = request.args.get('error')
+
+        if error:
+            return f'''
+            <html>
+            <body style="font-family: Arial; padding: 40px;">
+                <h1>Authorization Failed</h1>
+                <p style="color: red;">Error: {error}</p>
+                <p><a href="/qb-connect">Try again</a></p>
+            </body>
+            </html>
+            ''', 400
+
+        if not auth_code:
+            return "Error: No authorization code received", 400
+
+        auth_client = AuthClient(
+            client_id=Config.QUICKBOOKS_CLIENT_ID,
+            client_secret=Config.QUICKBOOKS_CLIENT_SECRET,
+            redirect_uri=Config.QUICKBOOKS_REDIRECT_URI,
+            environment=Config.QUICKBOOKS_ENVIRONMENT
+        )
+
+        # Exchange code for tokens
+        auth_client.get_bearer_token(auth_code, realm_id=realm_id)
+        refresh_token = auth_client.refresh_token
+
+        # Save to .env file
+        env_path = os.path.join(os.path.dirname(__file__), '.env')
+
+        # Read existing .env
+        with open(env_path, 'r') as f:
+            lines = f.readlines()
+
+        # Update QUICKBOOKS_REALM_ID and QUICKBOOKS_REFRESH_TOKEN
+        realm_found = False
+        token_found = False
+
+        with open(env_path, 'w') as f:
+            for line in lines:
+                if line.startswith('QUICKBOOKS_REALM_ID='):
+                    f.write(f'QUICKBOOKS_REALM_ID={realm_id}\n')
+                    realm_found = True
+                elif line.startswith('QUICKBOOKS_REFRESH_TOKEN='):
+                    f.write(f'QUICKBOOKS_REFRESH_TOKEN={refresh_token}\n')
+                    token_found = True
+                else:
+                    f.write(line)
+
+            # Add if not found
+            if not realm_found:
+                f.write(f'\nQUICKBOOKS_REALM_ID={realm_id}\n')
+            if not token_found:
+                f.write(f'QUICKBOOKS_REFRESH_TOKEN={refresh_token}\n')
+
+        return f'''
+        <html>
+        <body style="font-family: Arial; padding: 40px;">
+            <h1 style="color: #2ca01c;">QuickBooks Connected Successfully!</h1>
+            <p>Your phone agent is now connected to QuickBooks Online.</p>
+            <p><strong>Realm ID:</strong> {realm_id}</p>
+            <p><strong>Environment:</strong> {Config.QUICKBOOKS_ENVIRONMENT}</p>
+            <hr>
+            <p><strong>Next Steps:</strong></p>
+            <ol>
+                <li>Restart your phone agent server to load new credentials</li>
+                <li>Test the connection at <a href="/qb-status">/qb-status</a></li>
+                <li>Make sure DETERGENT_PRODUCT_NAME in .env matches your QuickBooks product name</li>
+            </ol>
+            <p style="color: #666; font-size: 14px; margin-top: 40px;">
+                Credentials saved to .env file. Keep this file secure.
+            </p>
+        </body>
+        </html>
+        '''
+
+    except Exception as e:
+        import traceback
+        return f'''
+        <html>
+        <body style="font-family: Arial; padding: 40px;">
+            <h1>Error Completing OAuth</h1>
+            <p style="color: red;">{str(e)}</p>
+            <pre style="background: #f5f5f5; padding: 10px; overflow-x: auto;">{traceback.format_exc()}</pre>
+            <p><a href="/qb-connect">Try again</a></p>
+        </body>
+        </html>
+        ''', 500
+
+
+@app.route("/qb-status")
+def qb_status():
+    """Check QuickBooks connection status"""
+    try:
+        if not Config.QUICKBOOKS_REFRESH_TOKEN:
+            return '''
+            <html>
+            <body style="font-family: Arial; padding: 40px;">
+                <h1>QuickBooks Not Connected</h1>
+                <p>Your phone agent is not connected to QuickBooks Online.</p>
+                <p><a href="/qb-connect" style="display: inline-block; padding: 15px 30px; background: #2ca01c; color: white; text-decoration: none; border-radius: 5px;">Connect Now</a></p>
+            </body>
+            </html>
+            '''
+
+        # Try to get company info to verify connection
+        from quickbooks_client import QuickBooksClient
+        qb = QuickBooksClient()
+        company_name = qb.get_company_info()
+
+        return f'''
+        <html>
+        <body style="font-family: Arial; padding: 40px;">
+            <h1 style="color: #2ca01c;">QuickBooks Connected ✅</h1>
+            <p><strong>Company:</strong> {company_name}</p>
+            <p><strong>Realm ID:</strong> {Config.QUICKBOOKS_REALM_ID}</p>
+            <p><strong>Environment:</strong> {Config.QUICKBOOKS_ENVIRONMENT}</p>
+            <p><strong>Product Name:</strong> {Config.DETERGENT_PRODUCT_NAME}</p>
+            <hr>
+            <p><a href="/orders">View Orders</a> | <a href="/qb-connect">Reconnect</a></p>
+        </body>
+        </html>
+        '''
+
+    except Exception as e:
+        import traceback
+        return f'''
+        <html>
+        <body style="font-family: Arial; padding: 40px;">
+            <h1>QuickBooks Connection Error ❌</h1>
+            <p style="color: red;">Error: {str(e)}</p>
+            <pre style="background: #f5f5f5; padding: 10px; overflow-x: auto;">{traceback.format_exc()}</pre>
+            <p><a href="/qb-connect">Reconnect</a></p>
+        </body>
+        </html>
+        ''', 500
+
+
+@app.route("/orders")
+def orders_dashboard():
+    """View recent orders and sync status"""
+    try:
+        from database import get_recent_orders
+
+        orders = get_recent_orders(limit=50)
+
+        html = '''
+        <html>
+        <head>
+            <title>Detergent Orders</title>
+            <style>
+                body { font-family: Arial; padding: 20px; }
+                table { border-collapse: collapse; width: 100%; margin-top: 20px; }
+                th, td { border: 1px solid #ddd; padding: 12px; text-align: left; font-size: 14px; }
+                th { background-color: #4CAF50; color: white; position: sticky; top: 0; }
+                .synced { background-color: #d4edda; }
+                .pending { background-color: #fff3cd; }
+                .failed { background-color: #f8d7da; }
+                .nav { margin-bottom: 20px; }
+                .nav a { margin-right: 15px; color: #2ca01c; text-decoration: none; }
+                .nav a:hover { text-decoration: underline; }
+            </style>
+        </head>
+        <body>
+            <h1>Detergent Orders</h1>
+            <div class="nav">
+                <a href="/qb-status">QuickBooks Status</a> |
+                <a href="/orders">Refresh</a>
+            </div>
+        '''
+
+        if not orders:
+            html += '<p>No orders yet. Orders will appear here after customers complete the detergent order flow.</p>'
+        else:
+            html += f'''
+            <p>Showing {len(orders)} most recent orders</p>
+            <table>
+                <tr>
+                    <th>ID</th>
+                    <th>Date</th>
+                    <th>Name</th>
+                    <th>Phone</th>
+                    <th>Address</th>
+                    <th>Payment</th>
+                    <th>Status</th>
+                    <th>QBO Invoice</th>
+                </tr>
+            '''
+
+            for order in orders:
+                status_class = order.sync_status
+                qb_invoice = order.qb_invoice_number if order.qb_invoice_number else '-'
+                date_str = order.created_at.strftime('%Y-%m-%d %H:%M')
+                address_short = f"{order.address_city}, {order.address_state}"
+
+                html += f'''
+                <tr class="{status_class}">
+                    <td>{order.id}</td>
+                    <td>{date_str}</td>
+                    <td>{order.customer_name}</td>
+                    <td>{order.customer_phone}</td>
+                    <td>{address_short}</td>
+                    <td>{order.payment_method}</td>
+                    <td><strong>{order.sync_status}</strong></td>
+                    <td>{qb_invoice}</td>
+                </tr>
+                '''
+
+            html += '</table>'
+
+        html += '''
+        </body>
+        </html>
+        '''
+
+        return html
+
+    except Exception as e:
+        import traceback
+        return f'''
+        <html>
+        <body style="font-family: Arial; padding: 40px;">
+            <h1>Error Loading Orders</h1>
+            <p style="color: red;">Error: {str(e)}</p>
+            <pre style="background: #f5f5f5; padding: 10px; overflow-x: auto;">{traceback.format_exc()}</pre>
+            <p>Make sure the database is initialized. Run: <code>python database.py</code></p>
+        </body>
+        </html>
+        ''', 500
+
+
 if __name__ == "__main__":
     print("\n" + "="*80)
     print("PHONE AGENT SERVER STARTING")
@@ -1039,9 +1486,9 @@ if __name__ == "__main__":
     print("Generating greeting audio...")
     greeting_path = generate_greeting_audio()
     if greeting_path:
-        print(f"✅ Greeting audio ready\n")
+        print(f"[OK] Greeting audio ready\n")
     else:
-        print(f"⚠️ Greeting audio generation failed - will use Twilio TTS fallback\n")
+        print(f"[WARNING] Greeting audio generation failed - will use Twilio TTS fallback\n")
 
     # Load or generate cached responses for common questions
     print("="*80)
@@ -1050,13 +1497,13 @@ if __name__ == "__main__":
         print("[Cache] No cache found - generating fresh responses...")
         generate_cached_responses()
     else:
-        print("[Cache] ✅ All responses loaded from disk - instant startup!\n")
+        print("[Cache] [OK] All responses loaded from disk - instant startup!\n")
     print("="*80 + "\n")
 
     if cached_responses:
-        print(f"🚀 Server ready - all optimizations active! ({len(cached_responses)} cached responses)\n")
+        print(f"[READY] Server ready - all optimizations active! ({len(cached_responses)} cached responses)\n")
     else:
-        print(f"⚠️  Server ready - but cache failed. Responses will be SLOW.\n")
+        print(f"[WARNING] Server ready - but cache failed. Responses will be SLOW.\n")
 
     from werkzeug.serving import run_simple
     run_simple('0.0.0.0', Config.PORT, app, use_reloader=False, threaded=True)

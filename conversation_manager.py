@@ -49,6 +49,11 @@ class ConversationManager:
         self.collecting_detergent_info = False
         self.detergent_customer_name = None
         self.detergent_customer_phone = None
+        self.detergent_address_street = None
+        self.detergent_address_city = None
+        self.detergent_address_state = None
+        self.detergent_address_zip = None
+        self.detergent_payment_method = None
 
         # Callbacks
         self.on_user_finished = None  # Callback when user finishes speaking
@@ -297,9 +302,52 @@ class ConversationManager:
             'call_sid': self.call_sid
         }
 
+    def set_detergent_address(self, street: str, city: str, state: str, zip_code: str):
+        """Store shipping address for detergent order"""
+        self.detergent_address_street = street
+        self.detergent_address_city = city
+        self.detergent_address_state = state
+        self.detergent_address_zip = zip_code
+        print(f"[ConversationManager] Address: {street}, {city}, {state} {zip_code}")
+
+    def set_detergent_payment(self, payment_method: str):
+        """Store payment method for detergent order"""
+        self.detergent_payment_method = payment_method
+        print(f"[ConversationManager] Payment method: {payment_method}")
+
+    def get_full_detergent_order(self) -> dict:
+        """Get complete detergent order information including address and payment"""
+        return {
+            'name': self.detergent_customer_name,
+            'phone': self.detergent_customer_phone,
+            'address_street': self.detergent_address_street,
+            'address_city': self.detergent_address_city,
+            'address_state': self.detergent_address_state,
+            'address_zip': self.detergent_address_zip,
+            'payment_method': self.detergent_payment_method,
+            'call_sid': self.call_sid
+        }
+
+    def is_detergent_order_complete(self) -> bool:
+        """Check if all required detergent order information is collected"""
+        return all([
+            self.detergent_customer_name,
+            self.detergent_customer_phone,
+            self.detergent_address_street,
+            self.detergent_address_city,
+            self.detergent_address_state,
+            self.detergent_address_zip,
+            self.detergent_payment_method
+        ])
+
     def clear_detergent_info(self):
         """Clear detergent order info"""
         self.collecting_detergent_info = False
         self.detergent_customer_name = None
         self.detergent_customer_phone = None
+        self.detergent_address_street = None
+        self.detergent_address_city = None
+        self.detergent_address_state = None
+        self.detergent_address_zip = None
+        self.detergent_payment_method = None
         print(f"[ConversationManager] Cleared detergent order info")

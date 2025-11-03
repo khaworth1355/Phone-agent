@@ -2,10 +2,10 @@
 Test Deepgram real-time streaming latency (simulates actual phone agent workflow)
 
 This test:
-1. Streams audio in small chunks (160 bytes every 20ms) like Twilio
-2. Measures when transcripts arrive vs when audio was sent
-3. Uses actual speech (not silence)
-4. Tracks timing precisely to identify delays
+1. Records when we start streaming
+2. Sends keepalive packets to keep connection alive
+3. Measures empty result delays to identify buffering
+4. Compares to your production logs
 
 Run this on your server to confirm if the delay is Deepgram-specific.
 """
@@ -15,43 +15,21 @@ import json
 from deepgram import Deepgram
 from config import Config
 
-# Generate 3 seconds of mulaw audio representing "Where are you located?"
-# Pattern: silence (500ms) -> speech (2s) -> silence (500ms)
-def generate_test_audio():
-    """Generate mulaw audio simulating speech"""
-    silence_byte = b'\xff'  # mulaw silence
-    speech_byte = b'\xaa'   # mulaw audio signal (simulates speech)
-
-    # 8000 samples/sec, 1 byte per sample
-    silence_500ms = silence_byte * 4000   # 500ms silence
-    speech_2s = speech_byte * 16000       # 2 seconds of "speech"
-
-    return silence_500ms + speech_2s + silence_500ms
-
 class StreamingLatencyTest:
     def __init__(self):
-        self.transcript_times = []
-        self.audio_send_times = []
         self.stream_start_time = None
-        self.first_transcript_time = None
-        self.final_transcript_time = None
-        self.transcripts_received = []
+        self.first_empty_result_time = None
+        self.empty_results_count = 0
+        self.messages_received = []
 
     async def run_test(self):
         """Run the streaming latency test"""
         print("="*80)
         print("DEEPGRAM STREAMING LATENCY TEST")
         print("="*80)
-        print("This test simulates real phone agent behavior:")
-        print("- Streams audio in 160-byte chunks every 20ms (like Twilio)")
-        print("- Measures transcript delivery delays")
+        print("This test measures Deepgram's response timing for streaming audio.")
+        print("We'll stream silence and measure when Deepgram sends back results.")
         print("="*80)
-        print()
-
-        # Generate test audio
-        full_audio = generate_test_audio()
-        print(f"Generated {len(full_audio)} bytes of test audio (3 seconds)")
-        print(f"Pattern: 500ms silence -> 2s speech -> 500ms silence")
         print()
 
         # Connect to Deepgram
@@ -83,61 +61,61 @@ class StreamingLatencyTest:
                 data = json.loads(msg) if isinstance(msg, str) else msg
 
                 if 'channel' in data:
-                    transcript = data['channel']['alternatives'][0]['transcript'] if data['channel']['alternatives'] else ''
+                    duration = data.get('duration', 0)
                     is_final = data.get('is_final', False)
 
-                    if transcript:
-                        if self.first_transcript_time is None:
-                            self.first_transcript_time = elapsed
+                    if self.first_empty_result_time is None:
+                        self.first_empty_result_time = elapsed
+                        print(f"  [{elapsed:6.2f}s] First result received (duration: {duration:.2f}s)")
 
-                        if is_final:
-                            self.final_transcript_time = elapsed
+                    self.empty_results_count += 1
+                    self.messages_received.append({
+                        'time': elapsed,
+                        'duration': duration,
+                        'is_final': is_final
+                    })
 
-                        status = "FINAL" if is_final else "INTERIM"
-                        print(f"  [{elapsed:6.2f}s] {status:7s}: '{transcript}'")
-
-                        self.transcripts_received.append({
-                            'time': elapsed,
-                            'text': transcript,
-                            'is_final': is_final
-                        })
-
-                        # Check word timestamps if available
-                        if is_final and data['channel']['alternatives'][0].get('words'):
-                            first_word = data['channel']['alternatives'][0]['words'][0]
-                            word_start = first_word.get('start', 0)
-                            print(f"           First word timestamp: {word_start:.2f}s")
-                            print(f"           Delay from word to transcript: {elapsed - word_start:.2f}s")
+                    # Log every 5th message to show progress
+                    if self.empty_results_count % 5 == 0:
+                        status = "final" if is_final else "interim"
+                        print(f"  [{elapsed:6.2f}s] Result #{self.empty_results_count} ({status}, duration: {duration:.2f}s)")
 
             except Exception as e:
                 print(f"  Error processing message: {e}")
 
         connection.registerHandler(connection.event.TRANSCRIPT_RECEIVED, on_message)
 
-        # Stream audio in 160-byte chunks (20ms each)
-        print("Streaming audio in real-time (160 bytes every 20ms)...")
+        # Stream silence in 160-byte chunks (20ms each) for 15 seconds
+        print("Streaming silence for 15 seconds (160 bytes every 20ms)...")
+        print("Measuring when Deepgram sends back empty results...")
         print()
 
-        chunk_size = 160  # 20ms of audio at 8kHz
-        chunks = [full_audio[i:i+chunk_size] for i in range(0, len(full_audio), chunk_size)]
+        silence_byte = b'\xff'  # mulaw silence
+        chunk = silence_byte * 160  # 20ms chunk
 
         self.stream_start_time = time.time()
+        chunks_sent = 0
 
-        for i, chunk in enumerate(chunks):
-            # Send chunk
+        # Stream for 15 seconds
+        for i in range(750):  # 750 chunks = 15 seconds
             connection.send(chunk)
-            self.audio_send_times.append(time.time() - self.stream_start_time)
+            chunks_sent += 1
 
-            # Log progress
-            if i % 50 == 0:  # Every 1 second
+            # Log progress every 1 second (50 chunks)
+            if i % 50 == 0:
                 elapsed = time.time() - self.stream_start_time
-                print(f"  [{elapsed:6.2f}s] Sent chunk {i}/{len(chunks)}")
+                print(f"  [{elapsed:6.2f}s] Sent {chunks_sent} chunks")
 
-            # Wait 20ms before next chunk (simulate real-time)
+            # Send keepalive every 5 seconds (250 chunks)
+            if i % 250 == 0 and i > 0:
+                connection.send(json.dumps({"type": "KeepAlive"}))
+                print(f"  [{time.time() - self.stream_start_time:6.2f}s] Sent KeepAlive")
+
+            # Wait 20ms before next chunk
             await asyncio.sleep(0.02)
 
         print()
-        print("All audio sent. Waiting 3 seconds for final transcripts...")
+        print("All audio sent. Waiting 3 seconds for final messages...")
         await asyncio.sleep(3)
 
         # Close connection
@@ -150,55 +128,57 @@ class StreamingLatencyTest:
         print("="*80)
         print()
 
-        print(f"Total audio duration:        3.00s")
-        print(f"Total chunks sent:           {len(chunks)}")
+        print(f"Stream duration:             15.00s")
+        print(f"Chunks sent:                 {chunks_sent}")
         print(f"Chunk size:                  160 bytes (20ms)")
         print()
 
-        if self.first_transcript_time:
-            print(f"First transcript arrived at: {self.first_transcript_time:.2f}s")
-            print(f"  (Speech starts at ~0.50s, so delay is {self.first_transcript_time - 0.5:.2f}s)")
-        else:
-            print("❌ No transcripts received!")
-
-        print()
-
-        if self.final_transcript_time:
-            print(f"Final transcript arrived at: {self.final_transcript_time:.2f}s")
-            print(f"  (Speech ends at ~2.50s, so delay is {self.final_transcript_time - 2.5:.2f}s)")
-        else:
-            print("❌ No final transcript received!")
-
-        print()
-        print(f"Total transcripts received:  {len(self.transcripts_received)}")
-        print()
-
-        # Diagnosis
-        print("="*80)
-        print("DIAGNOSIS")
-        print("="*80)
-
-        if self.first_transcript_time is None:
-            print("❌ CRITICAL: No transcripts received at all")
-            print("   This indicates a serious connection or API issue")
-        elif self.first_transcript_time < 2.0:
-            print("✅ GOOD: First transcript arrived quickly")
-            print(f"   Delay: {self.first_transcript_time - 0.5:.2f}s (acceptable)")
-        elif self.first_transcript_time < 5.0:
-            print("⚠️  SLOW: Moderate delay in transcript delivery")
-            print(f"   Delay: {self.first_transcript_time - 0.5:.2f}s (suboptimal)")
-        else:
-            print("❌ VERY SLOW: Severe delay in transcript delivery")
-            print(f"   Delay: {self.first_transcript_time - 0.5:.2f}s (PROBLEM!)")
+        if self.first_empty_result_time:
+            print(f"First result arrived at:     {self.first_empty_result_time:.2f}s")
+            print(f"Total results received:      {self.empty_results_count}")
             print()
-            print("   This matches the 8-10 second delays you're seeing in production.")
-            print("   The issue is likely:")
-            print("   - Network routing from this server to Deepgram")
-            print("   - TCP buffering/windowing issues")
-            print("   - Geographic routing problems")
-            print()
-            print("   RECOMMENDATION: Try a different server region (e.g., NYC instead of SF)")
 
+            # Compare to your production logs
+            print("COMPARISON TO YOUR PRODUCTION LOGS:")
+            print("-" * 80)
+            print()
+            print("Your production logs showed:")
+            print("  - Stream starts at X")
+            print("  - First result at X+10s (for audio at 0.5s)")
+            print("  - Delay: ~9-10 seconds")
+            print()
+            print(f"This test shows:")
+            print(f"  - Stream starts at 0s")
+            print(f"  - First result at {self.first_empty_result_time:.2f}s")
+            print(f"  - Delay: {self.first_empty_result_time:.2f}s")
+            print()
+
+            if self.first_empty_result_time > 5.0:
+                print("❌ VERY SLOW: This matches your production delays!")
+                print()
+                print("   The ~10 second delay is confirmed to be from Deepgram.")
+                print("   This is NOT normal behavior.")
+                print()
+                print("   POSSIBLE CAUSES:")
+                print("   1. Network routing from DigitalOcean SF to Deepgram servers")
+                print("   2. TCP buffering/windowing issues")
+                print("   3. Regional server selection by Deepgram")
+                print()
+                print("   RECOMMENDED ACTIONS:")
+                print("   1. Try DigitalOcean NYC region instead of SF")
+                print("   2. Contact Deepgram support with these test results")
+                print("   3. Try upgrading to Deepgram SDK 3.x")
+            elif self.first_empty_result_time > 2.0:
+                print("⚠️  SLOW: Moderate delay detected")
+                print(f"   Expected: <1s, Got: {self.first_empty_result_time:.2f}s")
+            else:
+                print("✅ GOOD: Results arriving quickly")
+                print("   This suggests the production delays are from something else")
+        else:
+            print("❌ No results received!")
+            print("   This indicates a connection or API issue")
+
+        print()
         print("="*80)
 
 async def main():

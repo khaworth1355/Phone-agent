@@ -55,6 +55,8 @@ class ConversationManager:
         self.detergent_address_zip = None
         self.detergent_payment_method = None
         self.detergent_quantity = None  # Number of units to order
+        self.detergent_awaiting_address_confirmation = False  # Waiting for user to confirm stored address
+        self.detergent_stored_address = None  # Stored address from QuickBooks for confirmation
 
         # Callbacks
         self.on_user_finished = None  # Callback when user finishes speaking
@@ -359,4 +361,6 @@ class ConversationManager:
         self.detergent_address_zip = None
         self.detergent_payment_method = None
         self.detergent_quantity = None
+        self.detergent_awaiting_address_confirmation = False
+        self.detergent_stored_address = None
         print(f"[ConversationManager] Cleared detergent order info")

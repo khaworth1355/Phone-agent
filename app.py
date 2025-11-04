@@ -954,11 +954,81 @@ async def handle_ai_response(session_id):
                     # We have a complete 10-digit phone number
                     conv_mgr.set_detergent_customer_phone(phone_number)
                     print(f"[AI] [OVERRIDE] Stored phone: {phone_number}")
-                    forced_response = "Great. What's the street address? [COLLECT_DETERGENT_ADDRESS]"
+
+                    # NEW: Check if customer exists in QuickBooks
+                    try:
+                        from quickbooks_client import QuickBooksClient
+                        qb = QuickBooksClient()
+                        existing_customer = qb.search_customer_by_phone(phone_number)
+
+                        if existing_customer and existing_customer.BillAddr:
+                            # Customer found with address - ask for confirmation
+                            print(f"[AI] [OVERRIDE] Found existing customer: {existing_customer.DisplayName}")
+                            addr = existing_customer.BillAddr
+
+                            # Store the address for later use
+                            stored_address = {
+                                'street': addr.Line1 if addr.Line1 else '',
+                                'city': addr.City if addr.City else '',
+                                'state': addr.CountrySubDivisionCode if addr.CountrySubDivisionCode else '',
+                                'zip': addr.PostalCode if addr.PostalCode else ''
+                            }
+                            conv_mgr.detergent_stored_address = stored_address
+                            conv_mgr.detergent_awaiting_address_confirmation = True
+
+                            print(f"[AI] [OVERRIDE] Stored address: {stored_address['street']}, {stored_address['city']}, {stored_address['state']} {stored_address['zip']}")
+
+                            # Ask for confirmation
+                            forced_response = f"Great! I have you on file at {stored_address['street']}, {stored_address['city']}, {stored_address['state']} {stored_address['zip']}. Is this address still correct? [CONFIRM_DETERGENT_ADDRESS]"
+                        else:
+                            # Customer not found or no address - collect normally
+                            print(f"[AI] [OVERRIDE] No existing customer found or no stored address")
+                            forced_response = "Great. What's the street address? [COLLECT_DETERGENT_ADDRESS]"
+
+                    except Exception as e:
+                        # QuickBooks search failed - fall back to normal collection
+                        print(f"[AI] [OVERRIDE] QuickBooks search error: {e}")
+                        print(f"[AI] [OVERRIDE] Falling back to normal address collection")
+                        forced_response = "Great. What's the street address? [COLLECT_DETERGENT_ADDRESS]"
                 else:
                     # Not enough digits - ask them to repeat
                     print(f"[AI] [OVERRIDE] Phone incomplete, asking to repeat")
                     forced_response = "I didn't catch all of that. Could you give me the full phone number with area code? [COLLECT_DETERGENT_PHONE]"
+            elif conv_mgr.detergent_awaiting_address_confirmation:
+                # User is confirming or denying the stored address
+                print(f"[AI] [OVERRIDE] State: Address confirmation received")
+                user_response = user_text.lower().strip()
+
+                # Check for affirmative responses
+                affirmative_keywords = ['yes', 'yeah', 'yep', 'correct', 'right', 'that\'s right', 'perfect', 'good', 'fine', 'ok', 'okay']
+                negative_keywords = ['no', 'nope', 'wrong', 'incorrect', 'not', 'different', 'change', 'update']
+
+                is_affirmative = any(keyword in user_response for keyword in affirmative_keywords)
+                is_negative = any(keyword in user_response for keyword in negative_keywords)
+
+                if is_affirmative and not is_negative:
+                    # User confirmed - use stored address
+                    print(f"[AI] [OVERRIDE] Address confirmed, using stored address")
+                    addr = conv_mgr.detergent_stored_address
+                    conv_mgr.detergent_address_street = addr['street']
+                    conv_mgr.detergent_address_city = addr['city']
+                    conv_mgr.detergent_address_state = addr['state']
+                    conv_mgr.detergent_address_zip = addr['zip']
+                    conv_mgr.detergent_awaiting_address_confirmation = False
+                    print(f"[AI] [OVERRIDE] Using address: {addr['street']}, {addr['city']}, {addr['state']} {addr['zip']}")
+
+                    # Skip to payment method
+                    forced_response = "Perfect. How would you like to pay? We accept credit card, check, or we can invoice you. [COLLECT_DETERGENT_PAYMENT]"
+                elif is_negative:
+                    # User denied - collect new address
+                    print(f"[AI] [OVERRIDE] Address denied, collecting new address")
+                    conv_mgr.detergent_awaiting_address_confirmation = False
+                    conv_mgr.detergent_stored_address = None
+                    forced_response = "No problem. What's the street address? [COLLECT_DETERGENT_ADDRESS]"
+                else:
+                    # Unclear response - ask again
+                    print(f"[AI] [OVERRIDE] Unclear confirmation response, asking again")
+                    forced_response = "I didn't catch that. Is the address I mentioned still correct? [CONFIRM_DETERGENT_ADDRESS]"
             elif not conv_mgr.detergent_address_street:
                 # User is providing street address
                 print(f"[AI] [OVERRIDE] State: Street provided, asking for city")
@@ -1203,6 +1273,21 @@ async def handle_ai_response(session_id):
             print(f"[AI] 🧴 Clearing detergent collection state - ready for follow-up questions")
             conv_mgr.clear_detergent_info()
 
+            # CRITICAL FIX: Add order confirmation to Claude's history so it knows the order was placed
+            # This allows Claude to correctly answer follow-up questions like "is my order confirmed?"
+            order_summary = (
+                f"Order confirmed for {order_data['name']}: {order_data.get('quantity', 1)} units of detergent "
+                f"to {order_data['address_city']}, {order_data['address_state']} {order_data['address_zip']}, "
+                f"paying by {order_data['payment_method']}. Invoice has been created in QuickBooks."
+            )
+            # Add this as an internal note in Claude's history (assistant message)
+            # This way Claude knows what just happened
+            claude.conversation_history.append({
+                'role': 'assistant',
+                'content': order_summary
+            })
+            print(f"[AI] [SYNC] Added order confirmation to Claude's history: {order_summary}")
+
         # Check for transfer request from Claude
         transfer_requested_by_claude = '[TRANSFER_TO_SALES]' in ai_text
 
@@ -1215,6 +1300,7 @@ async def handle_ai_response(session_id):
         spoken_text = spoken_text.replace('[COLLECT_DETERGENT_NAME]', '').strip()
         spoken_text = spoken_text.replace('[COLLECT_DETERGENT_PHONE]', '').strip()
         spoken_text = spoken_text.replace('[COLLECT_DETERGENT_ADDRESS]', '').strip()
+        spoken_text = spoken_text.replace('[CONFIRM_DETERGENT_ADDRESS]', '').strip()
         spoken_text = spoken_text.replace('[COLLECT_DETERGENT_PAYMENT]', '').strip()
         spoken_text = spoken_text.replace('[COLLECT_DETERGENT_QUANTITY]', '').strip()
         spoken_text = spoken_text.replace('[DETERGENT_ORDER_COMPLETE]', '').strip()

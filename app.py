@@ -1047,7 +1047,8 @@ async def handle_ai_response(session_id):
         transfer_requested_by_claude = '[TRANSFER_TO_SALES]' in ai_text
 
         # Combine Claude's decision with keyword fallback
-        transfer_requested = transfer_requested_by_claude or keyword_transfer_detected or detergent_complete
+        # Note: Detergent order completion does NOT trigger transfer - order is already saved to QuickBooks
+        transfer_requested = transfer_requested_by_claude or keyword_transfer_detected
 
         # Remove markers from spoken text
         spoken_text = ai_text.replace('[TRANSFER_TO_SALES]', '').strip()

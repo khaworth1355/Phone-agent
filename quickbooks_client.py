@@ -6,7 +6,8 @@ import time
 from intuitlib.client import AuthClient
 from intuitlib.enums import Scopes
 from quickbooks import QuickBooks
-from quickbooks.objects.customer import Customer, PhysicalAddress
+from quickbooks.objects.customer import Customer
+from quickbooks.objects.base import PhysicalAddress
 from quickbooks.objects.invoice import Invoice
 from quickbooks.objects.item import Item
 from quickbooks.objects.detailline import SalesItemLine, SalesItemLineDetail

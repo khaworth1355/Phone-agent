@@ -975,23 +975,34 @@ async def handle_ai_response(session_id):
                 forced_response = "And the state? [COLLECT_DETERGENT_ADDRESS]"
             elif not conv_mgr.detergent_address_state:
                 # User is providing state
-                print(f"[AI] [OVERRIDE] State: State provided, asking for ZIP")
+                print(f"[AI] [OVERRIDE] State: State provided, validating...")
                 state_text = user_text.strip().split('.')[0].strip()
                 # Try to parse state (could be "Oklahoma" or "OK")
                 state_names = {
                     'oklahoma': 'OK', 'texas': 'TX', 'california': 'CA', 'kansas': 'KS',
-                    'missouri': 'MO', 'arkansas': 'AR', 'new mexico': 'NM', 'colorado': 'CO'
+                    'missouri': 'MO', 'arkansas': 'AR', 'new mexico': 'NM', 'colorado': 'CO',
+                    'alabama': 'AL', 'alaska': 'AK', 'arizona': 'AZ', 'illinois': 'IL',
+                    'indiana': 'IN', 'iowa': 'IA', 'florida': 'FL', 'georgia': 'GA'
                 }
                 state_lower = state_text.lower()
-                if len(state_text) == 2:
+
+                # Validation: Check if it's a valid state
+                state = None
+                if len(state_text) == 2 and state_text.isalpha():
+                    # Two-letter code (e.g., "OK")
                     state = state_text.upper()
                 elif state_lower in state_names:
+                    # Full state name (e.g., "Oklahoma")
                     state = state_names[state_lower]
                 else:
-                    state = state_text  # Store as-is if we can't parse
-                conv_mgr.detergent_address_state = state
-                print(f"[AI] [OVERRIDE] Stored state: {state}")
-                forced_response = "And the ZIP code? [COLLECT_DETERGENT_ADDRESS]"
+                    # Invalid state - common mistakes: numbers (like "Two"), gibberish
+                    print(f"[AI] [OVERRIDE] Invalid state '{state_text}', asking to repeat")
+                    forced_response = "I didn't catch that. What state is the address in? [COLLECT_DETERGENT_ADDRESS]"
+
+                if state:
+                    conv_mgr.detergent_address_state = state
+                    print(f"[AI] [OVERRIDE] Stored state: {state}")
+                    forced_response = "And the ZIP code? [COLLECT_DETERGENT_ADDRESS]"
             elif not conv_mgr.detergent_address_zip:
                 # User is providing ZIP code
                 print(f"[AI] [OVERRIDE] State: ZIP provided, validating...")
@@ -1283,6 +1294,12 @@ def deepgram_worker(session_id, call_sid):
     def on_predictive_trigger(interim_text):
         """Callback when stable interim detected - start generating response early"""
         nonlocal predictive_response_data
+
+        # CRITICAL: Disable predictive responses during detergent workflow
+        # Predictive responses break the strict sequential order required for state-based forced responses
+        if conv_mgr.collecting_detergent_info:
+            print(f"[Predictive] ⚠️ Skipping - detergent workflow in progress (requires strict order)")
+            return
 
         # Cancel any existing predictive response
         if predictive_response_data['task'] and not predictive_response_data['task'].done():

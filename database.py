@@ -22,9 +22,10 @@ class DetergentOrder(Base):
     customer_phone = Column(String(50), nullable=False)
     address_street = Column(String(300), nullable=False)
     address_city = Column(String(100), nullable=False)
-    address_state = Column(String(2), nullable=False)
+    address_state = Column(String(50), nullable=False)  # Changed from 2 to 50 to support full state names
     address_zip = Column(String(10), nullable=False)
     payment_method = Column(String(100), nullable=False)
+    quantity = Column(Integer, nullable=False, default=1)  # Number of units ordered
 
     # QuickBooks sync data
     qb_customer_id = Column(String(50), nullable=True)
@@ -86,7 +87,7 @@ def create_order(order_data):
 
     Args:
         order_data: Dict with keys: name, phone, address_street, address_city,
-                    address_state, address_zip, payment_method, call_sid
+                    address_state, address_zip, payment_method, quantity, call_sid
 
     Returns:
         Order ID
@@ -103,6 +104,7 @@ def create_order(order_data):
             address_state=order_data['address_state'],
             address_zip=order_data['address_zip'],
             payment_method=order_data['payment_method'],
+            quantity=order_data.get('quantity', 1),  # Default to 1 if not provided
             sync_status='pending'
         )
 
@@ -110,7 +112,7 @@ def create_order(order_data):
         session.commit()
 
         order_id = order.id
-        print(f"[Database] Created order ID {order_id} for {order_data['name']}")
+        print(f"[Database] Created order ID {order_id} for {order_data['name']} - {order_data.get('quantity', 1)} units")
 
         return order_id
 

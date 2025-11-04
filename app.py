@@ -726,6 +726,49 @@ def send_audio_to_twilio(call_sid, audio_bytes):
         traceback.print_exc()
 
 
+def detect_detergent_order_intent(user_text):
+    """
+    Keyword-based detection for detergent order requests
+    Returns True if user text indicates they want to order detergent
+
+    Args:
+        user_text: The user's spoken text
+
+    Returns:
+        bool: True if detergent order keywords detected
+    """
+    if not user_text:
+        return False
+
+    text_lower = user_text.lower()
+
+    # Detergent order keywords (from config.py prompt)
+    detergent_keywords = [
+        'order detergent',
+        'buy detergent',
+        'purchase detergent',
+        'want to order more detergent',
+        'order turboklean',
+        'buy turboklean',
+        'need more detergent',
+        'want more detergent',
+        'order more detergent',
+        'want to order detergent',
+        'like to order detergent',
+        'need detergent',
+        'get detergent',
+        'get more detergent',
+    ]
+
+    # Check for detergent order keywords
+    for keyword in detergent_keywords:
+        if keyword in text_lower:
+            print(f"[Detergent Detection] [DETECTED] Keyword match: '{keyword}'")
+            return True
+
+    return False
+
+
 def detect_transfer_intent(user_text):
     """
     Keyword-based fallback detection for transfer requests
@@ -768,13 +811,13 @@ def detect_transfer_intent(user_text):
     # Check for explicit transfer requests
     for keyword in transfer_keywords:
         if keyword in text_lower:
-            print(f"[Transfer Detection] 🎯 Keyword match: '{keyword}'")
+            print(f"[Transfer Detection] [DETECTED] Keyword match: '{keyword}'")
             return True
 
     # Check for buying intent
     for keyword in buying_keywords:
         if keyword in text_lower:
-            print(f"[Transfer Detection] 🎯 Buying intent: '{keyword}'")
+            print(f"[Transfer Detection] [DETECTED] Buying intent: '{keyword}'")
             return True
 
     return False
@@ -804,15 +847,52 @@ async def handle_ai_response(session_id):
         user_text = conv_mgr.get_user_text()
         print(f"\n[AI] Processing user input: '{user_text}'")
 
-        # FALLBACK: Check for transfer intent via keywords (safety net if Claude doesn't trigger)
-        keyword_transfer_detected = detect_transfer_intent(user_text)
-        if keyword_transfer_detected:
-            print(f"[AI] 🚨 Fallback transfer detection activated!")
+        # CRITICAL: Check for detergent order intent BEFORE calling Claude
+        # This bypasses Claude's unreliable prompt following
+        detergent_order_detected = detect_detergent_order_intent(user_text)
+        forced_response = None
 
-        # Get Claude's response
-        print(f"[AI] Calling Claude...")
-        ai_text = await claude.get_response(user_text)
-        print(f"[AI] Claude responded: '{ai_text}'\n")
+        if detergent_order_detected and not conv_mgr.collecting_detergent_info:
+            print(f"[AI] [OVERRIDE] Detergent order detected! Forcing workflow start, bypassing Claude.")
+            # Force the first step of the detergent workflow
+            forced_response = "I can help with that. May I have your name please? [COLLECT_DETERGENT_NAME]"
+            print(f"[AI] [OVERRIDE] Forced response: '{forced_response}'\n")
+
+        # State-based forcing: If we're in the middle of collecting detergent info,
+        # force the correct next prompt based on what we've collected so far
+        elif conv_mgr.collecting_detergent_info:
+            if not conv_mgr.detergent_customer_name:
+                # User just provided their name, ask for phone
+                print(f"[AI] [OVERRIDE] State: Name provided, asking for phone")
+                name = user_text.strip()
+                forced_response = f"Thank you {name}. What's the best phone number to reach you? [COLLECT_DETERGENT_PHONE]"
+            elif not conv_mgr.detergent_customer_phone:
+                # User just provided phone, ask for address
+                print(f"[AI] [OVERRIDE] State: Phone provided, asking for address")
+                forced_response = "Great. What's your shipping address? I'll need the street address, city, state, and ZIP code. [COLLECT_DETERGENT_ADDRESS]"
+            elif not conv_mgr.detergent_address_street:
+                # User just provided address, ask for payment
+                print(f"[AI] [OVERRIDE] State: Address provided, asking for payment")
+                forced_response = "How would you like to pay? We accept credit card, check, or we can invoice you. [COLLECT_DETERGENT_PAYMENT]"
+            elif not conv_mgr.detergent_payment_method:
+                # User just provided payment, complete the order
+                print(f"[AI] [OVERRIDE] State: Payment provided, completing order")
+                # Don't call get_full_detergent_order() yet - payment will be stored later by marker handler
+                forced_response = f"Perfect! I'll get this order processed and connect you with our team right away. [DETERGENT_ORDER_COMPLETE]"
+
+        # Use forced response or get Claude's response
+        if forced_response:
+            ai_text = forced_response
+        else:
+            # FALLBACK: Check for transfer intent via keywords (safety net if Claude doesn't trigger)
+            keyword_transfer_detected = detect_transfer_intent(user_text)
+            if keyword_transfer_detected:
+                print(f"[AI] [DETECTED] Fallback transfer detection activated!")
+
+            # Get Claude's response
+            print(f"[AI] Calling Claude...")
+            ai_text = await claude.get_response(user_text)
+            print(f"[AI] Claude responded: '{ai_text}'\n")
 
         # Check for detergent order markers
         collect_name = '[COLLECT_DETERGENT_NAME]' in ai_text

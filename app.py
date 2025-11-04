@@ -743,18 +743,24 @@ def detect_detergent_order_intent(user_text):
     text_lower = user_text.lower()
 
     # Detergent order keywords (from config.py prompt)
+    # IMPORTANT: These are checked BEFORE transfer keywords, so be specific
     detergent_keywords = [
         'order detergent',
         'buy detergent',
         'purchase detergent',
         'want to order more detergent',
+        'want to buy more detergent',  # Added
+        'want to buy detergent',         # Added
+        'buy more detergent',            # Added
+        'purchase more detergent',       # Added
+        'order more detergent',
         'order turboklean',
         'buy turboklean',
         'need more detergent',
         'want more detergent',
-        'order more detergent',
         'want to order detergent',
         'like to order detergent',
+        'like to buy detergent',         # Added
         'need detergent',
         'get detergent',
         'get more detergent',
@@ -863,22 +869,41 @@ async def handle_ai_response(session_id):
         # force the correct next prompt based on what we've collected so far
         elif conv_mgr.collecting_detergent_info:
             if not conv_mgr.detergent_customer_name:
-                # User just provided their name, ask for phone
+                # User just provided their name, store it and ask for phone
                 print(f"[AI] [OVERRIDE] State: Name provided, asking for phone")
-                name = user_text.strip()
+                # Take only the first sentence to avoid duplicates from Deepgram
+                name = user_text.strip().split('.')[0].strip()
+                conv_mgr.set_detergent_customer_name(name)
+                print(f"[AI] [OVERRIDE] Stored name: {name}")
                 forced_response = f"Thank you {name}. What's the best phone number to reach you? [COLLECT_DETERGENT_PHONE]"
             elif not conv_mgr.detergent_customer_phone:
-                # User just provided phone, ask for address
+                # User just provided phone, store it and ask for address
                 print(f"[AI] [OVERRIDE] State: Phone provided, asking for address")
+                # Take only the first occurrence to avoid duplicates
+                phone = user_text.strip().split()[0:3]  # Take first 3 words max
+                phone_str = ' '.join(phone)
+                conv_mgr.set_detergent_customer_phone(phone_str)
+                print(f"[AI] [OVERRIDE] Stored phone: {phone_str}")
                 forced_response = "Great. What's your shipping address? I'll need the street address, city, state, and ZIP code. [COLLECT_DETERGENT_ADDRESS]"
             elif not conv_mgr.detergent_address_street:
-                # User just provided address, ask for payment
+                # User just provided address, parse and store it, then ask for payment
                 print(f"[AI] [OVERRIDE] State: Address provided, asking for payment")
+                # Parse the address (which should include street, city, state, ZIP)
+                parsed_address = parse_address(user_text.strip())
+                conv_mgr.set_detergent_address(
+                    street=parsed_address['street'],
+                    city=parsed_address['city'],
+                    state=parsed_address['state'],
+                    zip_code=parsed_address['zip']
+                )
+                print(f"[AI] [OVERRIDE] Stored address: {parsed_address['street']}, {parsed_address['city']}, {parsed_address['state']} {parsed_address['zip']}")
                 forced_response = "How would you like to pay? We accept credit card, check, or we can invoice you. [COLLECT_DETERGENT_PAYMENT]"
             elif not conv_mgr.detergent_payment_method:
-                # User just provided payment, complete the order
+                # User just provided payment, store it and complete the order
                 print(f"[AI] [OVERRIDE] State: Payment provided, completing order")
-                # Don't call get_full_detergent_order() yet - payment will be stored later by marker handler
+                payment = user_text.strip().split('.')[0].strip()  # Take first sentence
+                conv_mgr.set_detergent_payment(payment)
+                print(f"[AI] [OVERRIDE] Stored payment: {payment}")
                 forced_response = f"Perfect! I'll get this order processed and connect you with our team right away. [DETERGENT_ORDER_COMPLETE]"
 
         # Use forced response or get Claude's response
@@ -903,38 +928,50 @@ async def handle_ai_response(session_id):
         detergent_complete = '[DETERGENT_ORDER_COMPLETE]' in ai_text
 
         # Handle detergent order flow
+        # NOTE: State-based forcing already stores data, so these are fallbacks for Claude-generated markers
         if collect_name:
             print(f"[AI] 🧴 Starting detergent order - collecting name")
             conv_mgr.start_collecting_detergent_info()
 
         elif collect_phone:
-            print(f"[AI] 🧴 Collecting phone number")
-            # Extract name from user's previous response
-            conv_mgr.set_detergent_customer_name(user_text.strip())
+            # Only store name if not already stored (fallback for Claude-generated markers)
+            if not conv_mgr.detergent_customer_name:
+                print(f"[AI] 🧴 Collecting phone number (storing name from previous response)")
+                conv_mgr.set_detergent_customer_name(user_text.strip())
+            else:
+                print(f"[AI] 🧴 Collecting phone number (name already stored)")
 
         elif collect_address:
-            print(f"[AI] 🧴 Collecting shipping address")
-            # Extract phone from user's previous response
-            conv_mgr.set_detergent_customer_phone(user_text.strip())
+            # Only store phone if not already stored (fallback for Claude-generated markers)
+            if not conv_mgr.detergent_customer_phone:
+                print(f"[AI] 🧴 Collecting shipping address (storing phone from previous response)")
+                conv_mgr.set_detergent_customer_phone(user_text.strip())
+            else:
+                print(f"[AI] 🧴 Collecting shipping address (phone already stored)")
 
         elif collect_payment:
-            print(f"[AI] 🧴 Collecting payment method")
-            # Parse address from user's previous response
-            parsed_address = parse_address(user_text.strip())
-            conv_mgr.set_detergent_address(
-                street=parsed_address['street'],
-                city=parsed_address['city'],
-                state=parsed_address['state'],
-                zip_code=parsed_address['zip']
-            )
-            print(f"[AI] 🧴 Address: {parsed_address['street']}, {parsed_address['city']}, {parsed_address['state']} {parsed_address['zip']}")
+            # Only store address if not already stored (fallback for Claude-generated markers)
+            if not conv_mgr.detergent_address_street:
+                print(f"[AI] 🧴 Collecting payment method (storing address from previous response)")
+                parsed_address = parse_address(user_text.strip())
+                conv_mgr.set_detergent_address(
+                    street=parsed_address['street'],
+                    city=parsed_address['city'],
+                    state=parsed_address['state'],
+                    zip_code=parsed_address['zip']
+                )
+                print(f"[AI] 🧴 Address: {parsed_address['street']}, {parsed_address['city']}, {parsed_address['state']} {parsed_address['zip']}")
+            else:
+                print(f"[AI] 🧴 Collecting payment method (address already stored)")
 
         elif detergent_complete:
-            print(f"[AI] 🧴 Detergent order complete")
-
-            # Extract payment method from user's response
-            payment_method = user_text.strip()
-            conv_mgr.set_detergent_payment(payment_method)
+            # Only store payment if not already stored (fallback for Claude-generated markers)
+            if not conv_mgr.detergent_payment_method:
+                print(f"[AI] 🧴 Detergent order complete (storing payment from previous response)")
+                payment_method = user_text.strip()
+                conv_mgr.set_detergent_payment(payment_method)
+            else:
+                print(f"[AI] 🧴 Detergent order complete (payment already stored)")
 
             # Get complete order data
             order_data = conv_mgr.get_full_detergent_order()

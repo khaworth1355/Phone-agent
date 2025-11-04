@@ -994,8 +994,8 @@ async def handle_ai_response(session_id):
                 forced_response = "And the ZIP code? [COLLECT_DETERGENT_ADDRESS]"
             elif not conv_mgr.detergent_address_zip:
                 # User is providing ZIP code
-                print(f"[AI] [OVERRIDE] State: ZIP provided, asking for payment")
-                zip_text = user_text.strip()
+                print(f"[AI] [OVERRIDE] State: ZIP provided, validating...")
+                zip_text = user_text.strip().split('.')[0].strip()  # Take first sentence
                 # Extract 5 digits from text (could be "seven three one zero eight" or "73108")
                 import re
                 # First try to find existing digits
@@ -1003,15 +1003,22 @@ async def handle_ai_response(session_id):
                 if zip_match:
                     zip_code = zip_match.group(1)
                 else:
-                    # Try to convert text to digits (reuse phone converter logic)
-                    digits = convert_phone_text_to_digits(zip_text + "     ")  # Pad to avoid "too few digits" error
-                    if digits and len(digits) >= 5:
-                        zip_code = digits[:5]
+                    # Try to convert text to digits using the phone converter
+                    # Pad the input to satisfy the 10-digit requirement
+                    padded_text = zip_text + " zero zero zero zero zero"
+                    temp_result = convert_phone_text_to_digits(padded_text)
+                    if temp_result and len(temp_result) >= 5:
+                        zip_code = temp_result[:5]
                     else:
-                        zip_code = zip_text.split('.')[0].strip()  # Store as-is if we can't parse
-                conv_mgr.detergent_address_zip = zip_code
-                print(f"[AI] [OVERRIDE] Stored ZIP: {zip_code}")
-                forced_response = "Perfect. How would you like to pay? We accept credit card, check, or we can invoice you. [COLLECT_DETERGENT_PAYMENT]"
+                        # If conversion failed, ask them to repeat
+                        print(f"[AI] [OVERRIDE] ZIP incomplete, asking to repeat")
+                        forced_response = "I didn't catch that. Could you give me the ZIP code again? [COLLECT_DETERGENT_ADDRESS]"
+                        zip_code = None
+
+                if zip_code:
+                    conv_mgr.detergent_address_zip = zip_code
+                    print(f"[AI] [OVERRIDE] Stored ZIP: {zip_code}")
+                    forced_response = "Perfect. How would you like to pay? We accept credit card, check, or we can invoice you. [COLLECT_DETERGENT_PAYMENT]"
             elif not conv_mgr.detergent_payment_method:
                 # User is providing payment method - confirm and ask for quantity
                 print(f"[AI] [OVERRIDE] State: Payment provided, confirming details and asking for quantity")
@@ -1180,6 +1187,11 @@ async def handle_ai_response(session_id):
                     except:
                         pass
 
+            # CRITICAL FIX: Clear detergent state so agent can handle follow-up questions
+            # User can now ask about other products, request transfer, etc.
+            print(f"[AI] 🧴 Clearing detergent collection state - ready for follow-up questions")
+            conv_mgr.clear_detergent_info()
+
         # Check for transfer request from Claude
         transfer_requested_by_claude = '[TRANSFER_TO_SALES]' in ai_text
 
@@ -1217,6 +1229,20 @@ async def handle_ai_response(session_id):
 
         # Mark conversation complete
         conv_mgr.finish_ai_response(spoken_text)
+
+        # CRITICAL FIX: If we used a forced response (bypassed Claude), manually sync to Claude's history
+        # This prevents Claude from having stale/incomplete history when it's called next time
+        if forced_response:
+            print(f"[AI] [SYNC] Adding forced response to Claude's conversation history")
+            claude.conversation_history.append({
+                'role': 'user',
+                'content': user_text
+            })
+            claude.conversation_history.append({
+                'role': 'assistant',
+                'content': spoken_text
+            })
+            print(f"[AI] [SYNC] Claude history now has {len(claude.conversation_history)} messages")
 
         # Log AI response to call manager (as final transcript)
         call_manager.add_transcript(call_sid, spoken_text, is_final=True, speaker='AI')

@@ -265,12 +265,11 @@ class QuickBooksClient:
             # Add line to invoice
             invoice.Line = [line]
 
-            # Set additional fields
-            invoice.EmailStatus = 'NotSet'  # Don't auto-email yet
-            invoice.BillEmail = None
-
-            # Note about payment method
-            invoice.CustomerMemo = f"Payment method: {payment_method}"
+            # Note about payment method (CustomerMemo must be a Memo object)
+            from quickbooks.objects.base import CustomerMemo as Memo
+            memo = Memo()
+            memo.value = f"Payment method: {payment_method}"
+            invoice.CustomerMemo = memo
 
             # Save invoice
             invoice.save(qb=self.qb_client)

@@ -7,7 +7,6 @@ from intuitlib.client import AuthClient
 from intuitlib.enums import Scopes
 from quickbooks import QuickBooks
 from quickbooks.objects.customer import Customer
-from quickbooks.objects.base import PhysicalAddress
 from quickbooks.objects.invoice import Invoice
 from quickbooks.objects.item import Item
 from quickbooks.objects.detailline import SalesItemLine, SalesItemLineDetail
@@ -150,12 +149,12 @@ class QuickBooksClient:
             customer.FamilyName = name.split()[-1] if ' ' in name else ''
 
             # Set phone
-            from quickbooks.objects.base import PhoneNumber
+            from quickbooks.objects.base import PhoneNumber, Address
             customer.PrimaryPhone = PhoneNumber()
             customer.PrimaryPhone.FreeFormNumber = phone
 
             # Set billing address
-            customer.BillAddr = PhysicalAddress()
+            customer.BillAddr = Address()
             customer.BillAddr.Line1 = address['street']
             customer.BillAddr.City = address['city']
             customer.BillAddr.CountrySubDivisionCode = address['state']

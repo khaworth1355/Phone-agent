@@ -1129,7 +1129,7 @@ async def handle_ai_response(session_id):
                             break
                 conv_mgr.set_detergent_quantity(quantity)
                 print(f"[AI] [OVERRIDE] Stored quantity: {quantity}")
-                forced_response = f"Perfect! Is there anything else I can help you with today? [DETERGENT_ORDER_COMPLETE]"
+                forced_response = f"Order submitted. Is there anything else I can help you with today? [DETERGENT_ORDER_COMPLETE]"
 
         # Use forced response or get Claude's response
         if forced_response:

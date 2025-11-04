@@ -54,6 +54,7 @@ class ConversationManager:
         self.detergent_address_state = None
         self.detergent_address_zip = None
         self.detergent_payment_method = None
+        self.detergent_quantity = None  # Number of units to order
 
         # Callbacks
         self.on_user_finished = None  # Callback when user finishes speaking
@@ -315,8 +316,13 @@ class ConversationManager:
         self.detergent_payment_method = payment_method
         print(f"[ConversationManager] Payment method: {payment_method}")
 
+    def set_detergent_quantity(self, quantity: int):
+        """Store quantity for detergent order"""
+        self.detergent_quantity = quantity
+        print(f"[ConversationManager] Quantity: {quantity}")
+
     def get_full_detergent_order(self) -> dict:
-        """Get complete detergent order information including address and payment"""
+        """Get complete detergent order information including address, payment, and quantity"""
         return {
             'name': self.detergent_customer_name,
             'phone': self.detergent_customer_phone,
@@ -325,6 +331,7 @@ class ConversationManager:
             'address_state': self.detergent_address_state,
             'address_zip': self.detergent_address_zip,
             'payment_method': self.detergent_payment_method,
+            'quantity': self.detergent_quantity,
             'call_sid': self.call_sid
         }
 
@@ -337,7 +344,8 @@ class ConversationManager:
             self.detergent_address_city,
             self.detergent_address_state,
             self.detergent_address_zip,
-            self.detergent_payment_method
+            self.detergent_payment_method,
+            self.detergent_quantity is not None
         ])
 
     def clear_detergent_info(self):
@@ -350,4 +358,5 @@ class ConversationManager:
         self.detergent_address_state = None
         self.detergent_address_zip = None
         self.detergent_payment_method = None
+        self.detergent_quantity = None
         print(f"[ConversationManager] Cleared detergent order info")

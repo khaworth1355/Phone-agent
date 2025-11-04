@@ -221,8 +221,12 @@ def convert_phone_text_to_digits(phone_text):
 
     print(f"[Phone Parser] Converting: '{phone_text}'")
 
+    # IMPORTANT: Deepgram sends duplicates! Take only first sentence to avoid counting repeats
+    first_sentence = phone_text.split('.')[0].strip()
+    print(f"[Phone Parser] Using first sentence only: '{first_sentence}'")
+
     # Convert to lowercase and split into words
-    words = phone_text.lower().split()
+    words = first_sentence.lower().split()
 
     # Extract digits
     digits = []
@@ -244,13 +248,16 @@ def convert_phone_text_to_digits(phone_text):
     print(f"[Phone Parser] Extracted digits: '{phone_number}' ({len(phone_number)} digits)")
 
     # Need exactly 10 digits (area code + number)
-    if len(phone_number) >= 10:
-        # Take first 10 digits
-        result = phone_number[:10]
-        print(f"[Phone Parser] Result: {result}")
-        return result
+    if len(phone_number) == 10:
+        # Exactly 10 digits - perfect!
+        print(f"[Phone Parser] ✓ Result: {phone_number}")
+        return phone_number
+    elif len(phone_number) < 10:
+        print(f"[Phone Parser] ✗ Not enough digits (need 10, got {len(phone_number)})")
+        return None
     else:
-        print(f"[Phone Parser] Not enough digits (need 10, got {len(phone_number)})")
+        # More than 10 - might be repeats or mistakes, don't guess
+        print(f"[Phone Parser] ✗ Too many digits (need 10, got {len(phone_number)})")
         return None
 
 
@@ -928,6 +935,7 @@ async def handle_ai_response(session_id):
 
         # State-based forcing: If we're in the middle of collecting detergent info,
         # force the correct next prompt based on what we've collected so far
+        # COLLECT PIECE BY PIECE: name → phone → street → city → state → ZIP → payment → quantity
         elif conv_mgr.collecting_detergent_info:
             if not conv_mgr.detergent_customer_name:
                 # User just provided their name, store it and ask for phone
@@ -946,53 +954,93 @@ async def handle_ai_response(session_id):
                     # We have a complete 10-digit phone number
                     conv_mgr.set_detergent_customer_phone(phone_number)
                     print(f"[AI] [OVERRIDE] Stored phone: {phone_number}")
-                    forced_response = "Great. What's your shipping address? I'll need the street address, city, state, and ZIP code. [COLLECT_DETERGENT_ADDRESS]"
+                    forced_response = "Great. What's the street address? [COLLECT_DETERGENT_ADDRESS]"
                 else:
                     # Not enough digits - ask them to repeat
                     print(f"[AI] [OVERRIDE] Phone incomplete, asking to repeat")
                     forced_response = "I didn't catch all of that. Could you give me the full phone number with area code? [COLLECT_DETERGENT_PHONE]"
             elif not conv_mgr.detergent_address_street:
-                # User is providing address - parse and validate
-                print(f"[AI] [OVERRIDE] State: Address provided, validating...")
-                # Parse the address (which should include street, city, state, ZIP)
-                parsed_address = parse_address(user_text.strip())
-
-                # Validate that we have all required components
-                has_street = bool(parsed_address['street'])
-                has_city = bool(parsed_address['city'])
-                has_state = bool(parsed_address['state'])
-                has_zip = bool(parsed_address['zip'])
-
-                if has_street and has_city and has_state and has_zip:
-                    # Complete address - store and proceed
-                    conv_mgr.set_detergent_address(
-                        street=parsed_address['street'],
-                        city=parsed_address['city'],
-                        state=parsed_address['state'],
-                        zip_code=parsed_address['zip']
-                    )
-                    print(f"[AI] [OVERRIDE] Stored address: {parsed_address['street']}, {parsed_address['city']}, {parsed_address['state']} {parsed_address['zip']}")
-                    forced_response = "How would you like to pay? We accept credit card, check, or we can invoice you. [COLLECT_DETERGENT_PAYMENT]"
+                # User is providing street address
+                print(f"[AI] [OVERRIDE] State: Street provided, asking for city")
+                street = user_text.strip().split('.')[0].strip()
+                conv_mgr.detergent_address_street = street
+                print(f"[AI] [OVERRIDE] Stored street: {street}")
+                forced_response = "Got it. What city? [COLLECT_DETERGENT_ADDRESS]"
+            elif not conv_mgr.detergent_address_city:
+                # User is providing city
+                print(f"[AI] [OVERRIDE] State: City provided, asking for state")
+                city = user_text.strip().split('.')[0].strip()
+                conv_mgr.detergent_address_city = city
+                print(f"[AI] [OVERRIDE] Stored city: {city}")
+                forced_response = "And the state? [COLLECT_DETERGENT_ADDRESS]"
+            elif not conv_mgr.detergent_address_state:
+                # User is providing state
+                print(f"[AI] [OVERRIDE] State: State provided, asking for ZIP")
+                state_text = user_text.strip().split('.')[0].strip()
+                # Try to parse state (could be "Oklahoma" or "OK")
+                state_names = {
+                    'oklahoma': 'OK', 'texas': 'TX', 'california': 'CA', 'kansas': 'KS',
+                    'missouri': 'MO', 'arkansas': 'AR', 'new mexico': 'NM', 'colorado': 'CO'
+                }
+                state_lower = state_text.lower()
+                if len(state_text) == 2:
+                    state = state_text.upper()
+                elif state_lower in state_names:
+                    state = state_names[state_lower]
                 else:
-                    # Incomplete address - ask for missing parts
-                    missing = []
-                    if not has_street:
-                        missing.append("street address")
-                    if not has_city:
-                        missing.append("city")
-                    if not has_state:
-                        missing.append("state")
-                    if not has_zip:
-                        missing.append("ZIP code")
-
-                    print(f"[AI] [OVERRIDE] Address incomplete (missing: {', '.join(missing)}), asking to repeat")
-                    forced_response = f"I need the complete address. Could you give me the {', '.join(missing)}? [COLLECT_DETERGENT_ADDRESS]"
+                    state = state_text  # Store as-is if we can't parse
+                conv_mgr.detergent_address_state = state
+                print(f"[AI] [OVERRIDE] Stored state: {state}")
+                forced_response = "And the ZIP code? [COLLECT_DETERGENT_ADDRESS]"
+            elif not conv_mgr.detergent_address_zip:
+                # User is providing ZIP code
+                print(f"[AI] [OVERRIDE] State: ZIP provided, asking for payment")
+                zip_text = user_text.strip()
+                # Extract 5 digits from text (could be "seven three one zero eight" or "73108")
+                import re
+                # First try to find existing digits
+                zip_match = re.search(r'\b(\d{5})\b', zip_text)
+                if zip_match:
+                    zip_code = zip_match.group(1)
+                else:
+                    # Try to convert text to digits (reuse phone converter logic)
+                    digits = convert_phone_text_to_digits(zip_text + "     ")  # Pad to avoid "too few digits" error
+                    if digits and len(digits) >= 5:
+                        zip_code = digits[:5]
+                    else:
+                        zip_code = zip_text.split('.')[0].strip()  # Store as-is if we can't parse
+                conv_mgr.detergent_address_zip = zip_code
+                print(f"[AI] [OVERRIDE] Stored ZIP: {zip_code}")
+                forced_response = "Perfect. How would you like to pay? We accept credit card, check, or we can invoice you. [COLLECT_DETERGENT_PAYMENT]"
             elif not conv_mgr.detergent_payment_method:
-                # User just provided payment, store it and complete the order
-                print(f"[AI] [OVERRIDE] State: Payment provided, completing order")
+                # User is providing payment method - confirm and ask for quantity
+                print(f"[AI] [OVERRIDE] State: Payment provided, confirming details and asking for quantity")
                 payment = user_text.strip().split('.')[0].strip()  # Take first sentence
                 conv_mgr.set_detergent_payment(payment)
                 print(f"[AI] [OVERRIDE] Stored payment: {payment}")
+                # Create confirmation message
+                forced_response = f"Great! Let me confirm: {conv_mgr.detergent_customer_name} at {conv_mgr.detergent_address_city}, {conv_mgr.detergent_address_state}, paying by {payment}. How many units would you like to order? [COLLECT_DETERGENT_QUANTITY]"
+            elif conv_mgr.detergent_quantity is None:
+                # User is providing quantity - parse and create invoice
+                print(f"[AI] [OVERRIDE] State: Quantity provided, completing order")
+                # Extract number from text
+                import re
+                # Try to find a number
+                number_match = re.search(r'\b(\d+)\b', user_text)
+                if number_match:
+                    quantity = int(number_match.group(1))
+                else:
+                    # Try text numbers
+                    text_numbers = {'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
+                                   'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10}
+                    words = user_text.lower().split()
+                    quantity = 1  # Default to 1
+                    for word in words:
+                        if word in text_numbers:
+                            quantity = text_numbers[word]
+                            break
+                conv_mgr.set_detergent_quantity(quantity)
+                print(f"[AI] [OVERRIDE] Stored quantity: {quantity}")
                 forced_response = f"Perfect! Is there anything else I can help you with today? [DETERGENT_ORDER_COMPLETE]"
 
         # Use forced response or get Claude's response
@@ -1097,11 +1145,11 @@ async def handle_ai_response(session_id):
                         }
                     )
 
-                    # Create invoice
+                    # Create invoice with user-specified quantity
                     invoice = qb.create_invoice(
                         customer_id=qb_customer_id,
                         product_name=Config.DETERGENT_PRODUCT_NAME,
-                        quantity=1,
+                        quantity=order_data['quantity'],
                         payment_method=order_data['payment_method']
                     )
 
@@ -1145,6 +1193,7 @@ async def handle_ai_response(session_id):
         spoken_text = spoken_text.replace('[COLLECT_DETERGENT_PHONE]', '').strip()
         spoken_text = spoken_text.replace('[COLLECT_DETERGENT_ADDRESS]', '').strip()
         spoken_text = spoken_text.replace('[COLLECT_DETERGENT_PAYMENT]', '').strip()
+        spoken_text = spoken_text.replace('[COLLECT_DETERGENT_QUANTITY]', '').strip()
         spoken_text = spoken_text.replace('[DETERGENT_ORDER_COMPLETE]', '').strip()
 
         # If keyword detected transfer but Claude didn't trigger it, override response

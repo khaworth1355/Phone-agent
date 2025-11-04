@@ -851,6 +851,7 @@ async def handle_ai_response(session_id):
         # This bypasses Claude's unreliable prompt following
         detergent_order_detected = detect_detergent_order_intent(user_text)
         forced_response = None
+        keyword_transfer_detected = False  # Initialize to avoid UnboundLocalError
 
         if detergent_order_detected and not conv_mgr.collecting_detergent_info:
             print(f"[AI] [OVERRIDE] Detergent order detected! Forcing workflow start, bypassing Claude.")

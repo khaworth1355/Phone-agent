@@ -73,6 +73,7 @@ class ConversationManager:
 
         # Settings
         self.pause_threshold = Config.PAUSE_THRESHOLD
+        self.default_pause_threshold = Config.PAUSE_THRESHOLD  # Store default for restoration
         self.predictive_enabled = Config.PREDICTIVE_RESPONSES
         self.interim_stability_threshold = Config.INTERIM_STABILITY_THRESHOLD
 
@@ -289,6 +290,21 @@ class ConversationManager:
         self.last_final_time = None
         print(f"[ConversationManager] Reset")
 
+    def set_pause_threshold_for_structured_data(self, threshold: float = 1.5):
+        """
+        Increase pause threshold for structured data collection (phone, address, etc.)
+
+        Args:
+            threshold: Pause threshold in seconds (default: 1.5s for digit-by-digit speech)
+        """
+        self.pause_threshold = threshold
+        print(f"[ConversationManager] ⏱️ Pause threshold increased to {threshold}s for structured data collection")
+
+    def restore_default_pause_threshold(self):
+        """Restore pause threshold to default value"""
+        self.pause_threshold = self.default_pause_threshold
+        print(f"[ConversationManager] ⏱️ Pause threshold restored to {self.default_pause_threshold}s")
+
     def start_collecting_detergent_info(self):
         """Mark that we're starting to collect detergent customer info"""
         self.collecting_detergent_info = True
@@ -386,4 +402,6 @@ class ConversationManager:
         self.detergent_needs_qb_update = False
         self.detergent_qb_updates = {}
         self.detergent_collecting_email = False
+        # Restore default pause threshold in case we were in the middle of structured data collection
+        self.restore_default_pause_threshold()
         print(f"[ConversationManager] Cleared detergent order info")

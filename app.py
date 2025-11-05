@@ -1019,7 +1019,7 @@ async def handle_ai_response(session_id):
                 print(f"[AI] [OVERRIDE] Unclear confirmation response, asking again")
                 forced_response = "I didn't catch that. Is the information I have on file still correct? [CONFIRM_CUSTOMER_DATA]"
 
-        elif '[COLLECT_CORRECTION]' in ai_text or conv_mgr.detergent_needs_qb_update:
+        elif conv_mgr.detergent_needs_qb_update:
             # User said data is wrong, determine what needs updating
             print(f"[AI] [OVERRIDE] State: Collecting correction information")
             user_response = user_text.lower().strip()

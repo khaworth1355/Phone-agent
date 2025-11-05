@@ -58,6 +58,13 @@ class ConversationManager:
         self.detergent_awaiting_address_confirmation = False  # Waiting for user to confirm stored address
         self.detergent_stored_address = None  # Stored address from QuickBooks for confirmation
 
+        # NEW FIELDS for enhanced QuickBooks customer lookup
+        self.detergent_quickbooks_customer = None      # Full Customer object from QB
+        self.detergent_customer_email = None           # Email from QuickBooks
+        self.detergent_awaiting_full_confirmation = False  # Waiting for "yes/no" on all data
+        self.detergent_needs_qb_update = False         # Flag if customer provided corrections
+        self.detergent_qb_updates = {}                 # Dict of fields to update in QB
+
         # Callbacks
         self.on_user_finished = None  # Callback when user finishes speaking
         self.on_barge_in = None  # Callback when user interrupts AI
@@ -363,4 +370,10 @@ class ConversationManager:
         self.detergent_quantity = None
         self.detergent_awaiting_address_confirmation = False
         self.detergent_stored_address = None
+        # Clear new QuickBooks customer lookup fields
+        self.detergent_quickbooks_customer = None
+        self.detergent_customer_email = None
+        self.detergent_awaiting_full_confirmation = False
+        self.detergent_needs_qb_update = False
+        self.detergent_qb_updates = {}
         print(f"[ConversationManager] Cleared detergent order info")

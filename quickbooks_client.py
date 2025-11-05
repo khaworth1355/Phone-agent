@@ -169,6 +169,45 @@ class QuickBooksClient:
 
         return self._retry_on_failure(_create)
 
+    def get_customer_summary(self, customer):
+        """
+        Extract and format customer data for phone order confirmation
+
+        Args:
+            customer: QuickBooks Customer object
+
+        Returns:
+            dict with formatted customer information
+        """
+        summary = {
+            'qb_customer_id': customer.Id,
+            'name': customer.DisplayName if customer.DisplayName else None,
+            'phone': None,
+            'email': None,
+            'address_street': None,
+            'address_city': None,
+            'address_state': None,
+            'address_zip': None
+        }
+
+        # Extract phone
+        if customer.PrimaryPhone and customer.PrimaryPhone.FreeFormNumber:
+            summary['phone'] = customer.PrimaryPhone.FreeFormNumber
+
+        # Extract email
+        if customer.PrimaryEmailAddr and customer.PrimaryEmailAddr.Address:
+            summary['email'] = customer.PrimaryEmailAddr.Address
+
+        # Extract billing address
+        if customer.BillAddr:
+            addr = customer.BillAddr
+            summary['address_street'] = addr.Line1 if addr.Line1 else None
+            summary['address_city'] = addr.City if addr.City else None
+            summary['address_state'] = addr.CountrySubDivisionCode if addr.CountrySubDivisionCode else None
+            summary['address_zip'] = addr.PostalCode if addr.PostalCode else None
+
+        return summary
+
     def get_or_create_customer(self, name, phone, address):
         """
         Get existing customer by phone or create new one
@@ -278,6 +317,65 @@ class QuickBooksClient:
             return invoice
 
         return self._retry_on_failure(_create)
+
+    def update_customer(self, customer_id, updates):
+        """
+        Update customer information in QuickBooks
+
+        Args:
+            customer_id: QuickBooks customer ID
+            updates: dict with keys: name, email, address_street, address_city, address_state, address_zip
+
+        Returns:
+            True if successful, False otherwise
+        """
+        def _update():
+            print(f"[QuickBooks] Updating customer ID {customer_id}")
+
+            # Fetch current customer
+            customer = Customer.get(customer_id, qb=self.qb_client)
+
+            # Update name
+            if 'name' in updates and updates['name']:
+                customer.DisplayName = updates['name']
+                parts = updates['name'].split()
+                customer.GivenName = parts[0] if parts else updates['name']
+                customer.FamilyName = parts[-1] if len(parts) > 1 else ''
+
+            # Update email
+            if 'email' in updates and updates['email']:
+                from quickbooks.objects.base import EmailAddress
+                if not customer.PrimaryEmailAddr:
+                    customer.PrimaryEmailAddr = EmailAddress()
+                customer.PrimaryEmailAddr.Address = updates['email']
+
+            # Update address
+            if any(k in updates for k in ['address_street', 'address_city', 'address_state', 'address_zip']):
+                from quickbooks.objects.base import Address
+                if not customer.BillAddr:
+                    customer.BillAddr = Address()
+
+                if 'address_street' in updates:
+                    customer.BillAddr.Line1 = updates['address_street']
+                if 'address_city' in updates:
+                    customer.BillAddr.City = updates['address_city']
+                if 'address_state' in updates:
+                    customer.BillAddr.CountrySubDivisionCode = updates['address_state']
+                if 'address_zip' in updates:
+                    customer.BillAddr.PostalCode = updates['address_zip']
+                customer.BillAddr.Country = 'USA'
+
+            # Save changes
+            customer.save(qb=self.qb_client)
+
+            print(f"[QuickBooks] ✓ Customer {customer_id} updated successfully")
+            return True
+
+        try:
+            return self._retry_on_failure(_update)
+        except Exception as e:
+            print(f"[QuickBooks] ❌ Failed to update customer {customer_id}: {e}")
+            return False
 
     def get_company_info(self):
         """

@@ -76,6 +76,7 @@ class ConversationManager:
         self.default_pause_threshold = Config.PAUSE_THRESHOLD  # Store default for restoration
         self.predictive_enabled = Config.PREDICTIVE_RESPONSES
         self.interim_stability_threshold = Config.INTERIM_STABILITY_THRESHOLD
+        self.ignore_barge_in = False  # Flag to ignore barge-in during structured data collection
 
         print(f"[ConversationManager] Initialized for call {call_sid}")
         print(f"[ConversationManager] Pause threshold: {self.pause_threshold}s")
@@ -96,13 +97,19 @@ class ConversationManager:
         # Update last speech time
         self.last_speech_time = current_time
 
-        # Handle barge-in
+        # Handle barge-in (unless we're ignoring it for structured data collection)
         if self.state == ConversationState.AI_SPEAKING:
-            print(f"\n[ConversationManager] 🔴 BARGE-IN DETECTED!")
-            print(f"[ConversationManager] User interrupted AI: '{text}'\n")
-            self._trigger_barge_in()
-            self.state = ConversationState.USER_SPEAKING
-            self.current_user_text = ""  # Reset buffer
+            if self.ignore_barge_in:
+                # During structured data collection, treat as continuation instead of interruption
+                print(f"[ConversationManager] User continuing (barge-in ignored for structured data): '{text}'")
+                self.state = ConversationState.USER_SPEAKING
+                # Don't reset buffer - keep accumulated text
+            else:
+                print(f"\n[ConversationManager] 🔴 BARGE-IN DETECTED!")
+                print(f"[ConversationManager] User interrupted AI: '{text}'\n")
+                self._trigger_barge_in()
+                self.state = ConversationState.USER_SPEAKING
+                self.current_user_text = ""  # Reset buffer
 
         # Update state if needed
         if self.state == ConversationState.IDLE:
@@ -290,20 +297,25 @@ class ConversationManager:
         self.last_final_time = None
         print(f"[ConversationManager] Reset")
 
-    def set_pause_threshold_for_structured_data(self, threshold: float = 1.5):
+    def set_pause_threshold_for_structured_data(self, threshold: float = 2.5):
         """
         Increase pause threshold for structured data collection (phone, address, etc.)
+        Also disables barge-in detection to allow users to continue after AI asks clarifying questions
 
         Args:
-            threshold: Pause threshold in seconds (default: 1.5s for digit-by-digit speech)
+            threshold: Pause threshold in seconds (default: 2.5s for digit-by-digit speech)
         """
         self.pause_threshold = threshold
+        self.ignore_barge_in = True
         print(f"[ConversationManager] ⏱️ Pause threshold increased to {threshold}s for structured data collection")
+        print(f"[ConversationManager] 🔇 Barge-in detection disabled (allowing continuation)")
 
     def restore_default_pause_threshold(self):
-        """Restore pause threshold to default value"""
+        """Restore pause threshold to default value and re-enable barge-in detection"""
         self.pause_threshold = self.default_pause_threshold
+        self.ignore_barge_in = False
         print(f"[ConversationManager] ⏱️ Pause threshold restored to {self.default_pause_threshold}s")
+        print(f"[ConversationManager] 🔊 Barge-in detection re-enabled")
 
     def start_collecting_detergent_info(self):
         """Mark that we're starting to collect detergent customer info"""

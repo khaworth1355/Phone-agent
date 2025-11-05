@@ -1093,8 +1093,8 @@ async def handle_ai_response(session_id):
                 name = user_text.strip().split('.')[0].strip()
                 conv_mgr.set_detergent_customer_name(name)
                 print(f"[AI] [OVERRIDE] Stored name: {name}")
-                # Increase pause threshold for digit-by-digit phone number entry
-                conv_mgr.set_pause_threshold_for_structured_data(1.5)
+                # Increase pause threshold and disable barge-in for digit-by-digit phone number entry
+                conv_mgr.set_pause_threshold_for_structured_data()
                 forced_response = f"Thank you {name}. What's the best phone number to reach you? [COLLECT_DETERGENT_PHONE]"
             elif not conv_mgr.detergent_customer_phone:
                 # User is providing phone number - convert text to digits and validate
@@ -1226,8 +1226,8 @@ async def handle_ai_response(session_id):
                 if state:
                     conv_mgr.detergent_address_state = state
                     print(f"[AI] [OVERRIDE] Stored state: {state}")
-                    # Increase pause threshold for digit-by-digit ZIP code entry
-                    conv_mgr.set_pause_threshold_for_structured_data(1.5)
+                    # Increase pause threshold and disable barge-in for digit-by-digit ZIP code entry
+                    conv_mgr.set_pause_threshold_for_structured_data()
                     forced_response = "And the ZIP code? [COLLECT_DETERGENT_ADDRESS]"
             elif not conv_mgr.detergent_address_zip:
                 # User is providing ZIP code

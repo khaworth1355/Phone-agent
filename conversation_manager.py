@@ -111,7 +111,14 @@ class ConversationManager:
         if is_final:
             # Final transcript
             self.last_final_time = current_time
-            self.current_user_text += " " + text if self.current_user_text else text
+
+            # CRITICAL FIX: Deepgram sometimes sends duplicate final transcripts
+            # Check if this exact text is already at the end of accumulated text
+            if not self.current_user_text.endswith(text):
+                self.current_user_text += " " + text if self.current_user_text else text
+            else:
+                print(f"[ConversationManager] Skipping duplicate final transcript")
+
             self.interim_buffer = ""
 
             print(f"[ConversationManager] Final: '{text}'")

@@ -162,10 +162,22 @@ class QuickBooksClient:
             customer.BillAddr.Country = 'USA'
 
             # Save customer
-            customer.save(qb=self.qb_client)
-
-            print(f"[QuickBooks] ✓ Customer created - ID: {customer.Id}")
-            return customer.Id
+            try:
+                customer.save(qb=self.qb_client)
+                print(f"[QuickBooks] ✓ Customer created - ID: {customer.Id}")
+                return customer.Id
+            except Exception as e:
+                # Handle duplicate name error by appending phone to make it unique
+                if 'Duplicate Name Exists' in str(e) or '6240' in str(e):
+                    print(f"[QuickBooks] Name '{name}' already exists, appending phone for uniqueness")
+                    # Extract last 4 digits of phone for suffix
+                    phone_suffix = phone[-4:] if len(phone) >= 4 else phone
+                    customer.DisplayName = f"{name} ({phone_suffix})"
+                    customer.save(qb=self.qb_client)
+                    print(f"[QuickBooks] ✓ Customer created with unique name - ID: {customer.Id}")
+                    return customer.Id
+                else:
+                    raise
 
         return self._retry_on_failure(_create)
 

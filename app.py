@@ -465,9 +465,11 @@ def voice():
     print("="*80 + "\n")
 
     # Store caller phone number for QuickBooks lookup
+    # Normalize phone number: remove + prefix to match format used when customer speaks their phone
     if caller:
-        call_phone_numbers[call_sid] = caller
-        print(f"[Voice] Stored caller phone: {caller} for call {call_sid}")
+        normalized_phone = caller.lstrip('+') if caller else None
+        call_phone_numbers[call_sid] = normalized_phone
+        print(f"[Voice] Stored caller phone: {caller} -> normalized: {normalized_phone}")
 
     # Create call record
     call_manager.create_call(call_sid, caller)

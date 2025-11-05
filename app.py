@@ -43,6 +43,7 @@ sessions = {}
 # Store conversation state per call (persists across reconnections)
 call_conversations = {}  # call_sid -> ConversationManager
 call_ai_speaking_until = {}  # call_sid -> timestamp when AI will stop speaking
+call_phone_numbers = {}  # call_sid -> caller phone number (E.164 format)
 
 # Cached responses for common questions (populated at startup)
 cached_responses = {}
@@ -463,6 +464,11 @@ def voice():
     print(f"From: {caller}")
     print("="*80 + "\n")
 
+    # Store caller phone number for QuickBooks lookup
+    if caller:
+        call_phone_numbers[call_sid] = caller
+        print(f"[Voice] Stored caller phone: {caller} for call {call_sid}")
+
     # Create call record
     call_manager.create_call(call_sid, caller)
 
@@ -546,6 +552,13 @@ def media(ws):
                 print(f"[Stream Start] Call: {call_sid}")
                 print(f"[Stream Start] Stream: {stream_sid}")
 
+                # Get caller phone number from stored data
+                caller_phone = call_phone_numbers.get(call_sid)
+                if caller_phone:
+                    print(f"[Stream Start] Caller phone: {caller_phone}")
+                else:
+                    print(f"[Stream Start] Warning: No caller phone found for call {call_sid}")
+
                 # Reuse existing conversation manager if available (preserves history across reconnections)
                 if call_sid in call_conversations:
                     print(f"[Stream Start] ✅ Reusing existing conversation state")
@@ -572,6 +585,7 @@ def media(ws):
                     'conversation_manager': conv_mgr,
                     'claude_agent': claude,
                     'elevenlabs_client': ElevenLabsClient(),
+                    'caller_number': caller_phone,  # Store caller phone for QuickBooks lookup
                 }
 
                 # Start Deepgram worker
@@ -626,6 +640,11 @@ def media(ws):
                     call_manager.end_call(session_call_sid)
                 except KeyError:
                     pass  # Already cleaned up
+
+                # Clean up caller phone number
+                if session_call_sid in call_phone_numbers:
+                    del call_phone_numbers[session_call_sid]
+                    print(f"[WebSocket] Cleaned up caller phone for call {session_call_sid}")
 
                 # Clean up conversation state (preserves history for potential reconnects within ~30s)
                 # We keep these for a bit longer in case of quick reconnects

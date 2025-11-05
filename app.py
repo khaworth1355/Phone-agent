@@ -465,9 +465,12 @@ def voice():
     print("="*80 + "\n")
 
     # Store caller phone number for QuickBooks lookup
-    # Normalize phone number: remove + prefix to match format used when customer speaks their phone
+    # Normalize phone number: remove + prefix AND country code (1) to match format used when customer speaks their phone
+    # Twilio sends: +18166741783, User speaks: 8166741783
     if caller:
-        normalized_phone = caller.lstrip('+') if caller else None
+        normalized_phone = caller.lstrip('+')  # Remove +
+        if normalized_phone.startswith('1') and len(normalized_phone) == 11:
+            normalized_phone = normalized_phone[1:]  # Remove leading 1 (US country code)
         call_phone_numbers[call_sid] = normalized_phone
         print(f"[Voice] Stored caller phone: {caller} -> normalized: {normalized_phone}")
 
@@ -1261,7 +1264,7 @@ async def handle_ai_response(session_id):
                 conv_mgr.set_detergent_payment(payment)
                 print(f"[AI] [OVERRIDE] Stored payment: {payment}")
                 # Create confirmation message
-                forced_response = f"Great! Let me confirm: {conv_mgr.detergent_customer_name} at {conv_mgr.detergent_address_city}, {conv_mgr.detergent_address_state}, paying by {payment}. How many units would you like to order? [COLLECT_DETERGENT_QUANTITY]"
+                forced_response = f"Great! Let me confirm: {conv_mgr.detergent_customer_name} at {conv_mgr.detergent_address_street}, {conv_mgr.detergent_address_city}, {conv_mgr.detergent_address_state} {conv_mgr.detergent_address_zip}, paying by {payment}. How many units would you like to order? [COLLECT_DETERGENT_QUANTITY]"
             elif conv_mgr.detergent_quantity is None:
                 # User is providing quantity - parse and create invoice
                 print(f"[AI] [OVERRIDE] State: Quantity provided, completing order")

@@ -64,6 +64,7 @@ class ConversationManager:
         self.detergent_awaiting_full_confirmation = False  # Waiting for "yes/no" on all data
         self.detergent_needs_qb_update = False         # Flag if customer provided corrections
         self.detergent_qb_updates = {}                 # Dict of fields to update in QB
+        self.detergent_collecting_email = False        # Flag when collecting email update
 
         # Callbacks
         self.on_user_finished = None  # Callback when user finishes speaking
@@ -335,6 +336,7 @@ class ConversationManager:
         return {
             'name': self.detergent_customer_name,
             'phone': self.detergent_customer_phone,
+            'email': self.detergent_customer_email,
             'address_street': self.detergent_address_street,
             'address_city': self.detergent_address_city,
             'address_state': self.detergent_address_state,
@@ -376,4 +378,5 @@ class ConversationManager:
         self.detergent_awaiting_full_confirmation = False
         self.detergent_needs_qb_update = False
         self.detergent_qb_updates = {}
+        self.detergent_collecting_email = False
         print(f"[ConversationManager] Cleared detergent order info")

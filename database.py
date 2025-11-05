@@ -20,6 +20,7 @@ class DetergentOrder(Base):
     call_sid = Column(String(100), nullable=False)
     customer_name = Column(String(200), nullable=False)
     customer_phone = Column(String(50), nullable=False)
+    customer_email = Column(String(200), nullable=True)  # Email address (optional)
     address_street = Column(String(300), nullable=False)
     address_city = Column(String(100), nullable=False)
     address_state = Column(String(50), nullable=False)  # Changed from 2 to 50 to support full state names
@@ -86,7 +87,7 @@ def create_order(order_data):
     Create a new detergent order
 
     Args:
-        order_data: Dict with keys: name, phone, address_street, address_city,
+        order_data: Dict with keys: name, phone, email (optional), address_street, address_city,
                     address_state, address_zip, payment_method, quantity, call_sid
 
     Returns:
@@ -99,6 +100,7 @@ def create_order(order_data):
             call_sid=order_data['call_sid'],
             customer_name=order_data['name'],
             customer_phone=order_data['phone'],
+            customer_email=order_data.get('email'),  # Optional email field
             address_street=order_data['address_street'],
             address_city=order_data['address_city'],
             address_state=order_data['address_state'],

@@ -1046,6 +1046,7 @@ async def handle_ai_response(session_id):
             elif 'email' in user_response:
                 print(f"[AI] [OVERRIDE] User wants to update email")
                 conv_mgr.detergent_needs_qb_update = False  # Will be set to True again when storing updates
+                conv_mgr.detergent_collecting_email = True
                 forced_response = "What's your email address? [COLLECT_DETERGENT_EMAIL]"
                 conv_mgr.detergent_qb_updates['email'] = True
 
@@ -1224,11 +1225,12 @@ async def handle_ai_response(session_id):
                     conv_mgr.detergent_address_zip = zip_code
                     print(f"[AI] [OVERRIDE] Stored ZIP: {zip_code}")
                     forced_response = "Perfect. How would you like to pay? We accept credit card, check, or we can invoice you. [COLLECT_DETERGENT_PAYMENT]"
-            elif '[COLLECT_DETERGENT_EMAIL]' in ai_text:
+            elif conv_mgr.detergent_collecting_email:
                 # User is providing email address
                 print(f"[AI] [OVERRIDE] State: Email provided")
                 email = user_text.strip().split('.')[0].strip()  # Take first sentence
                 conv_mgr.detergent_customer_email = email
+                conv_mgr.detergent_collecting_email = False
                 print(f"[AI] [OVERRIDE] Stored email: {email}")
                 forced_response = "Perfect. How would you like to pay? We accept credit card, check, or we can invoice you. [COLLECT_DETERGENT_PAYMENT]"
             elif not conv_mgr.detergent_payment_method:
@@ -1334,6 +1336,8 @@ async def handle_ai_response(session_id):
             print(f"[AI] 🧴 Complete Order:")
             print(f"     Name: {order_data['name']}")
             print(f"     Phone: {order_data['phone']}")
+            if order_data.get('email'):
+                print(f"     Email: {order_data['email']}")
             print(f"     Address: {order_data['address_street']}, {order_data['address_city']}, {order_data['address_state']} {order_data['address_zip']}")
             print(f"     Payment: {order_data['payment_method']}")
 

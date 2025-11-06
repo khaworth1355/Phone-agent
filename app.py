@@ -23,6 +23,7 @@ from deepgram_client import DeepgramClient
 from conversation_manager import ConversationManager, ConversationState
 from claude_client import ClaudeAgent
 from elevenlabs_client import ElevenLabsClient
+from routing_engine import routing_engine
 
 # Ensure real-time console output
 sys.stdout.reconfigure(line_buffering=True) if hasattr(sys.stdout, 'reconfigure') else None
@@ -37,6 +38,14 @@ twilio_client = TwilioClient(Config.TWILIO_ACCOUNT_SID, Config.TWILIO_AUTH_TOKEN
 # Create temp directory for audio files
 TEMP_AUDIO_DIR = os.path.join(os.path.dirname(__file__), 'temp_audio')
 os.makedirs(TEMP_AUDIO_DIR, exist_ok=True)
+
+# ==============================================================================
+# FEATURE FLAGS
+# ==============================================================================
+DETERGENT_WORKFLOW_ENABLED = False  # Set to True to re-enable detergent ordering
+# Note: Detergent workflow disabled 2025-11-05 for call routing system
+# See CALL_ROUTING_TRANSFORMATION_PLAN.md for details
+# ==============================================================================
 
 # Store active sessions
 sessions = {}
@@ -1087,13 +1096,24 @@ async def handle_ai_response(session_id):
         user_text = conv_mgr.get_user_text()
         print(f"\n[AI] Processing user input: '{user_text}'")
 
-        # CRITICAL: Check for detergent order intent BEFORE calling Claude
-        # This bypasses Claude's unreliable prompt following
-        detergent_order_detected = detect_detergent_order_intent(user_text)
+        # ==============================================================================
+        # LEGACY: DETERGENT ORDERING WORKFLOW
+        # Status: DISABLED - Preserved for reference
+        # Date Disabled: 2025-11-05
+        # Reason: System converted to call routing (see CALL_ROUTING_TRANSFORMATION_PLAN.md)
+        # ==============================================================================
+
         forced_response = None
         keyword_transfer_detected = False  # Initialize to avoid UnboundLocalError
 
-        if detergent_order_detected and not conv_mgr.collecting_detergent_info:
+        if DETERGENT_WORKFLOW_ENABLED:
+            # CRITICAL: Check for detergent order intent BEFORE calling Claude
+            # This bypasses Claude's unreliable prompt following
+            detergent_order_detected = detect_detergent_order_intent(user_text)
+        else:
+            detergent_order_detected = False
+
+        if DETERGENT_WORKFLOW_ENABLED and detergent_order_detected and not conv_mgr.collecting_detergent_info:
             print(f"[AI] [OVERRIDE] Detergent order detected! Checking caller ID for existing customer...")
 
             # Get caller's phone number from session
@@ -1227,7 +1247,7 @@ async def handle_ai_response(session_id):
                 forced_response = "What's your current street address? [COLLECT_DETERGENT_ADDRESS]"
                 conv_mgr.detergent_qb_updates['address'] = True
 
-        elif conv_mgr.collecting_detergent_info:
+        elif DETERGENT_WORKFLOW_ENABLED and conv_mgr.collecting_detergent_info:
             if not conv_mgr.detergent_customer_name:
                 # User just provided their name, store it and ask for phone
                 print(f"[AI] [OVERRIDE] State: Name provided, asking for phone")
@@ -1439,6 +1459,77 @@ async def handle_ai_response(session_id):
                 print(f"[AI] [OVERRIDE] Stored quantity: {quantity}")
                 forced_response = f"Order submitted. Is there anything else I can help you with today? [DETERGENT_ORDER_COMPLETE]"
 
+        # ==============================================================================
+        # NEW: CALL ROUTING WORKFLOW
+        # ==============================================================================
+        if not DETERGENT_WORKFLOW_ENABLED and not conv_mgr.routing_decision_made and not forced_response:
+            print(f"[Routing] Analyzing caller intent...")
+
+            from routing_engine import routing_engine
+
+            decision = routing_engine.determine_route(user_text, conv_mgr.get_conversation_history())
+
+            if decision.department == 'MENU':
+                # Present menu options
+                print(f"[Routing] Presenting menu to caller")
+                forced_response = (
+                    "I can connect you to the right department. "
+                    "Say 'Sales' for new orders and product information. "
+                    "Say 'Support' for technical help. "
+                    "Say 'Billing' for payment questions. "
+                    "Which department can I help you reach?"
+                )
+
+            elif decision.needs_confirmation:
+                # Ask for confirmation before routing
+                print(f"[Routing] Need confirmation for: {decision.department}")
+                conv_mgr.routing_department = decision.department
+                conv_mgr.routing_department_id = decision.department_id
+                conv_mgr.routing_confidence = decision.confidence
+                conv_mgr.routing_method = decision.method
+                conv_mgr.routing_reason = decision.reason
+                conv_mgr.awaiting_routing_confirmation = True
+
+                forced_response = f"I'll connect you to our {decision.department} team. Does that sound right?"
+
+            else:
+                # High confidence - route immediately
+                print(f"[Routing] Auto-routing to {decision.department} (confidence: {decision.confidence})")
+                conv_mgr.routing_decision_made = True
+                conv_mgr.routing_department = decision.department
+                conv_mgr.routing_department_id = decision.department_id
+                conv_mgr.routing_confidence = decision.confidence
+                conv_mgr.routing_method = decision.method
+                conv_mgr.routing_reason = decision.reason
+
+                # Initiate transfer (will be called after AI speaks)
+                forced_response = f"Perfect! Connecting you to {decision.department} now. [TRANSFER_TO_DEPARTMENT]"
+
+        elif not DETERGENT_WORKFLOW_ENABLED and conv_mgr.awaiting_routing_confirmation and not forced_response:
+            # User responding to confirmation question
+            print(f"[Routing] Processing confirmation response")
+            user_response = user_text.lower()
+
+            if any(word in user_response for word in ['yes', 'yeah', 'yep', 'correct', 'right', 'sure', 'ok', 'okay']):
+                # Confirmed - proceed with routing
+                print(f"[Routing] User confirmed routing to {conv_mgr.routing_department}")
+                conv_mgr.routing_decision_made = True
+                conv_mgr.awaiting_routing_confirmation = False
+
+                forced_response = f"Great! Connecting you to {conv_mgr.routing_department} now. [TRANSFER_TO_DEPARTMENT]"
+
+            else:
+                # User said no - ask again
+                print(f"[Routing] User declined routing, asking again")
+                conv_mgr.awaiting_routing_confirmation = False
+                conv_mgr.routing_department = None
+
+                forced_response = "My apologies. How can I help you today?"
+
+        # ==============================================================================
+        # END ROUTING WORKFLOW
+        # ==============================================================================
+
         # Use forced response or get Claude's response
         if forced_response:
             ai_text = forced_response
@@ -1630,13 +1721,15 @@ async def handle_ai_response(session_id):
 
         # Check for transfer request from Claude
         transfer_requested_by_claude = '[TRANSFER_TO_SALES]' in ai_text
+        transfer_to_department = '[TRANSFER_TO_DEPARTMENT]' in ai_text
 
         # Combine Claude's decision with keyword fallback
         # Note: Detergent order completion does NOT trigger transfer - order is already saved to QuickBooks
-        transfer_requested = transfer_requested_by_claude or keyword_transfer_detected
+        transfer_requested = transfer_requested_by_claude or keyword_transfer_detected or transfer_to_department
 
         # Remove markers from spoken text
         spoken_text = ai_text.replace('[TRANSFER_TO_SALES]', '').strip()
+        spoken_text = spoken_text.replace('[TRANSFER_TO_DEPARTMENT]', '').strip()
         spoken_text = spoken_text.replace('[COLLECT_DETERGENT_NAME]', '').strip()
         spoken_text = spoken_text.replace('[COLLECT_DETERGENT_PHONE]', '').strip()
         spoken_text = spoken_text.replace('[COLLECT_DETERGENT_ADDRESS]', '').strip()
@@ -1688,16 +1781,58 @@ async def handle_ai_response(session_id):
         # Log AI response to call manager (as final transcript)
         call_manager.add_transcript(call_sid, spoken_text, is_final=True, speaker='AI')
 
-        # Handle transfer if requested (by Claude OR by keyword fallback)
+        # Handle transfer if requested (by Claude OR by keyword fallback OR routing decision)
         if transfer_requested:
-            if transfer_requested_by_claude:
+            if transfer_to_department and conv_mgr.routing_department:
+                # New routing workflow - transfer to specific department
+                print(f"[AI] 🔄 Routing to {conv_mgr.routing_department} department!")
+
+                # Give a moment for the announcement to finish playing
+                await asyncio.sleep(2)
+
+                # Call the /dial-agent endpoint to initiate conference transfer
+                import requests
+                try:
+                    response = requests.post(f"{Config.BASE_URL}/dial-agent", json={
+                        'call_sid': call_sid,
+                        'department': conv_mgr.routing_department,
+                        'agent_phone': routing_engine.get_department_by_name(conv_mgr.routing_department).phone_number
+                    }, timeout=5)
+
+                    if response.status_code == 200:
+                        print(f"[AI] ✓ Transfer initiated to {conv_mgr.routing_department}")
+
+                        # Log routing decision to database
+                        from database import create_call_route
+                        from datetime import datetime
+                        create_call_route({
+                            'call_sid': call_sid,
+                            'caller_phone': session.get('caller_number'),
+                            'routing_decision': conv_mgr.routing_department,
+                            'routing_method': conv_mgr.routing_method,
+                            'routing_reason': conv_mgr.routing_reason,
+                            'confidence_score': conv_mgr.routing_confidence,
+                            'routed_to': routing_engine.get_department_by_name(conv_mgr.routing_department).phone_number,
+                            'department_id': conv_mgr.routing_department_id,
+                            'routed_at': datetime.utcnow()
+                        })
+                    else:
+                        print(f"[AI] ❌ Transfer failed: {response.text}")
+
+                except Exception as e:
+                    print(f"[AI] ❌ Error initiating transfer: {e}")
+
+            elif transfer_requested_by_claude:
+                # Legacy: Transfer to sales (old workflow)
                 print(f"[AI] 🔄 Transfer to sales requested by Claude!")
+                await asyncio.sleep(2)
+                transfer_call(call_sid, Config.SALES_FORWARD_NUMBER)
             else:
+                # Keyword fallback
                 print(f"[AI] 🔄 Transfer to sales triggered by keyword fallback!")
-            # Give a moment for the announcement to finish playing
-            await asyncio.sleep(2)
-            # Transfer the call
-            transfer_call(call_sid, Config.SALES_FORWARD_NUMBER)
+                await asyncio.sleep(2)
+                transfer_call(call_sid, Config.SALES_FORWARD_NUMBER)
+
             print(f"[AI] Transfer initiated, ending AI session\n")
 
     except Exception as e:
@@ -1727,7 +1862,7 @@ def deepgram_worker(session_id, call_sid):
 
         # CRITICAL: Disable predictive responses during detergent workflow
         # Predictive responses break the strict sequential order required for state-based forced responses
-        if conv_mgr.collecting_detergent_info:
+        if DETERGENT_WORKFLOW_ENABLED and conv_mgr.collecting_detergent_info:
             print(f"[Predictive] ⚠️ Skipping - detergent workflow in progress (requires strict order)")
             return
 

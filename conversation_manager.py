@@ -15,8 +15,17 @@ class ConversationState(Enum):
     WAITING_FOR_PAUSE = "waiting_for_pause"
     AI_THINKING = "ai_thinking"
     AI_SPEAKING = "ai_speaking"
+
+    # Routing workflow states
+    GREETING = "greeting"                      # Playing initial message
+    ROUTING_QUESTION = "routing_question"      # Asking "How can I help?"
+    ANALYZING_INTENT = "analyzing_intent"      # Processing routing decision
+    CONFIRMING_ROUTE = "confirming_route"      # "I'll connect you to Sales, ok?"
+    TRANSFERRING = "transferring"              # Dialing agent into conference
+    HUMAN_CONVERSATION = "human_conversation"  # Human agent handling call
+
+    # Legacy states (kept for detergent workflow - currently disabled)
     COLLECTING_CUSTOMER_INFO = "collecting_customer_info"
-    HUMAN_CONVERSATION = "human_conversation"  # Agent is handling the call
 
 
 class ConversationManager:
@@ -69,6 +78,15 @@ class ConversationManager:
 
         # Conference/routing fields
         self.agent_joined_at = None  # Timestamp when human agent joined conference
+
+        # NEW: Routing workflow fields
+        self.routing_decision_made = False
+        self.routing_department = None
+        self.routing_confidence = None
+        self.routing_method = None  # 'ai', 'keyword', 'menu'
+        self.routing_reason = None  # Why this department was chosen
+        self.awaiting_routing_confirmation = False
+        self.routing_department_id = None
 
         # Callbacks
         self.on_user_finished = None  # Callback when user finishes speaking

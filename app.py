@@ -1781,6 +1781,19 @@ async def handle_ai_response(session_id):
         # Log AI response to call manager (as final transcript)
         call_manager.add_transcript(call_sid, spoken_text, is_final=True, speaker='AI')
 
+        # Store AI response in database
+        try:
+            from database import create_transcript
+            create_transcript(
+                call_sid=call_sid,
+                speaker='ai',
+                text=spoken_text,
+                is_final=True,
+                confidence=None
+            )
+        except Exception as e:
+            print(f"[Database] Error storing AI transcript: {e}")
+
         # Handle transfer if requested (by Claude OR by keyword fallback OR routing decision)
         if transfer_requested:
             if transfer_to_department and conv_mgr.routing_department:
@@ -1915,8 +1928,59 @@ def deepgram_worker(session_id, call_sid):
     # Set up predictive response callback
     conv_mgr.on_predictive_trigger = on_predictive_trigger
 
+    def identify_speaker(text: str, is_final: bool, conv_mgr) -> str:
+        """
+        Identify who is speaking: caller, agent, or AI
+
+        Uses heuristics based on:
+        - Call state (before/after agent joined)
+        - Timing (agent recently joined?)
+        - Known AI responses (filtered by echo detection)
+        """
+        # AI responses are already filtered by echo detection, so we won't see them here
+
+        # Check if agent has joined the conference
+        if conv_mgr.state == ConversationState.HUMAN_CONVERSATION and conv_mgr.agent_joined_at:
+            # Both caller and agent are present
+            # Use timing and heuristics to distinguish
+
+            from datetime import datetime
+            time_since_join = (datetime.utcnow() - conv_mgr.agent_joined_at).total_seconds()
+
+            # First 5 seconds after agent joins - likely agent greeting
+            if time_since_join < 5:
+                # Look for agent greeting patterns
+                agent_greetings = ['hello', 'hi', 'thank', 'thanks for', 'this is', 'how can i help', 'what can i do']
+                if any(phrase in text.lower() for phrase in agent_greetings):
+                    return 'agent'
+
+            # For longer conversations, we'd need more sophisticated logic or Deepgram diarization
+            # For now, alternate between caller and agent (simple but imperfect)
+            # This will be improved with Deepgram speaker diarization in production
+
+            # Check last speaker from database
+            from database import get_session, CallTranscript
+            session = get_session()
+            try:
+                last_transcript = session.query(CallTranscript).filter_by(
+                    call_sid=call_sid,
+                    is_final=True
+                ).order_by(CallTranscript.timestamp.desc()).first()
+
+                if last_transcript:
+                    # Alternate speakers (crude but functional)
+                    return 'agent' if last_transcript.speaker == 'caller' else 'caller'
+            finally:
+                session.close()
+
+            # Default to caller if no history
+            return 'caller'
+
+        # Before agent joins, all speech is from caller
+        return 'caller'
+
     def on_transcript(text, is_final):
-        """Callback when transcript received"""
+        """Callback when transcript received - now with database storage and speaker ID"""
         # Check if AI is currently speaking - if so, ignore transcripts (this is echo)
         current_time = time.time()
         if call_sid in call_ai_speaking_until:
@@ -1930,11 +1994,28 @@ def deepgram_worker(session_id, call_sid):
                 del call_ai_speaking_until[call_sid]
                 print(f"[Echo Filter] AI finished speaking, resuming transcript processing")
 
-        # Send to old call manager for logging (with speaker label)
-        call_manager.add_transcript(call_sid, text, is_final, speaker='Caller')
+        # Identify speaker
+        speaker = identify_speaker(text, is_final, conv_mgr)
 
-        # Send to conversation manager for pause detection
-        conv_mgr.add_transcript(text, is_final)
+        # Store in database (all transcripts - interim and final)
+        try:
+            from database import create_transcript
+            create_transcript(
+                call_sid=call_sid,
+                speaker=speaker,
+                text=text,
+                is_final=is_final,
+                confidence=None  # Could extract from Deepgram metadata if needed
+            )
+        except Exception as e:
+            print(f"[Database] Error storing transcript: {e}")
+
+        # Send to old call manager for logging (with speaker label)
+        call_manager.add_transcript(call_sid, text, is_final, speaker=speaker)
+
+        # Send to conversation manager for pause detection (only if caller speaking before agent joins)
+        if speaker == 'caller' and conv_mgr.state != ConversationState.HUMAN_CONVERSATION:
+            conv_mgr.add_transcript(text, is_final)
 
     # Create new event loop for this thread
     loop = asyncio.new_event_loop()
@@ -2000,6 +2081,13 @@ def deepgram_worker(session_id, call_sid):
                             conv_mgr.finish_ai_response(cached_result['text'])
                             call_manager.add_transcript(call_sid, cached_result['text'], is_final=True, speaker='AI')
 
+                            # Store in database
+                            try:
+                                from database import create_transcript
+                                create_transcript(call_sid=call_sid, speaker='ai', text=cached_result['text'], is_final=True, confidence=None)
+                            except Exception as e:
+                                print(f"[Database] Error storing cached AI transcript: {e}")
+
                             total_duration = time.time() - response_start_time
                             print(f"[TIMING] ✅ Total cached response time: {total_duration:.3f}s\n")
 
@@ -2021,6 +2109,13 @@ def deepgram_worker(session_id, call_sid):
 
                             conv_mgr.finish_ai_response(result['text'])
                             call_manager.add_transcript(call_sid, result['text'], is_final=True, speaker='AI')
+
+                            # Store in database
+                            try:
+                                from database import create_transcript
+                                create_transcript(call_sid=call_sid, speaker='ai', text=result['text'], is_final=True, confidence=None)
+                            except Exception as e:
+                                print(f"[Database] Error storing predictive AI transcript: {e}")
 
                             # Handle transfer if needed
                             if result['transfer']:

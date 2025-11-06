@@ -11,13 +11,14 @@ import os
 import uuid
 from queue import Queue, Empty
 
-from flask import Flask, request, send_file
+from flask import Flask, request, send_file, jsonify
 from flask_sock import Sock
-from twilio.twiml.voice_response import VoiceResponse, Start, Connect, Play
+from twilio.twiml.voice_response import VoiceResponse, Start, Connect, Play, Dial
 from twilio.rest import Client as TwilioClient
 
 from config import Config
 from call_manager import call_manager
+from conference_manager import conference_manager
 from deepgram_client import DeepgramClient
 from conversation_manager import ConversationManager, ConversationState
 from claude_client import ClaudeAgent
@@ -494,16 +495,29 @@ def voice():
     # Add brief pause after greeting to let Deepgram reset
     response.pause(length=0.5)
 
-    # Start media stream with inbound audio only (prevents AI echo)
+    # Start media stream - capture BOTH tracks for conference (caller + agent)
     start = Start()
     stream = start.stream(url=Config.WEBSOCKET_URL)
-    # Only capture inbound audio (caller's voice) to prevent echo of AI responses
-    stream.parameter(name='track', value='inbound_track')
+    # Capture both audio tracks to record caller + agent conversation
+    stream.parameter(name='track', value='both_tracks')
     response.append(start)
 
-    # Keep call open for conversation (10 minutes max)
-    response.pause(length=600)
-    response.say("Thank you for calling. Goodbye!", voice='Polly.Joanna')
+    # Create conference room for this call
+    conference_name = conference_manager.create_conference(call_sid, normalized_phone if caller else 'Unknown')
+
+    # Join caller to conference (enables routing while maintaining Media Stream)
+    dial = Dial()
+    dial.conference(
+        conference_name,
+        start_conference_on_enter=True,
+        end_conference_on_exit=True,
+        wait_url='http://twimlets.com/holdmusic?Bucket=com.twilio.music.classical',
+        status_callback=f"{Config.BASE_URL}/conference-status",
+        status_callback_event=['start', 'end', 'join', 'leave']
+    )
+    response.append(dial)
+
+    print(f"[Voice] Created conference: {conference_name}")
 
     return str(response), 200, {'Content-Type': 'text/xml'}
 
@@ -689,6 +703,115 @@ def transfer_call(call_sid, phone_number, announcement_text="Transferring you no
         import traceback
         traceback.print_exc()
         return False
+
+
+@app.route('/dial-agent', methods=['POST'])
+def dial_agent():
+    """
+    Dial human agent into active conference
+    Called after routing decision is made
+
+    POST body: {
+        "call_sid": "CA123...",
+        "department": "Sales",
+        "agent_phone": "+18166741783"
+    }
+    """
+    from datetime import datetime
+
+    try:
+        data = request.json
+        call_sid = data.get('call_sid')
+        agent_phone = data.get('agent_phone')
+        department = data.get('department', 'Agent')
+
+        if not call_sid or not agent_phone:
+            return jsonify({'error': 'call_sid and agent_phone required'}), 400
+
+        conference_name = f"call-room-{call_sid}"
+
+        print(f"\n[DialAgent] Dialing {agent_phone} into conference {conference_name}")
+        print(f"[DialAgent] Department: {department}")
+
+        # Create outbound call to agent
+        call = twilio_client.calls.create(
+            to=agent_phone,
+            from_=Config.TWILIO_PHONE_NUMBER,
+            twiml=f'''<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say voice="Polly.Joanna">Connecting you to a caller from {department}.</Say>
+    <Dial>
+        <Conference>{conference_name}</Conference>
+    </Dial>
+</Response>'''
+        )
+
+        print(f"[DialAgent] ✓ Agent call initiated: {call.sid}")
+
+        # TODO: Log routing decision to database when Phase 2 is implemented
+        # from database import create_call_route
+        # create_call_route({...})
+
+        return jsonify({
+            'status': 'success',
+            'agent_call_sid': call.sid,
+            'conference': conference_name
+        })
+
+    except Exception as e:
+        print(f"[DialAgent] ❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/conference-status', methods=['POST'])
+def conference_status():
+    """
+    Twilio webhook for conference events
+    Events: conference-start, conference-end, participant-join, participant-leave
+    """
+    event = request.form.get('StatusCallbackEvent')
+    conference_sid = request.form.get('ConferenceSid')
+    call_sid = request.form.get('CallSid')
+    friendly_name = request.form.get('FriendlyName')  # "call-room-{call_sid}"
+    participant_label = request.form.get('ParticipantLabel', '')
+
+    print(f"\n[Conference Event] {event}")
+    print(f"[Conference Event] Conference: {friendly_name}")
+    print(f"[Conference Event] Call SID: {call_sid}")
+
+    if event == 'participant-join':
+        # Track who joined
+        # First participant is caller, second is agent
+        conf_info = conference_manager.get_conference_by_name(friendly_name)
+
+        if conf_info:
+            participant_count = len(conf_info['participants'])
+            role = 'caller' if participant_count == 0 else 'agent'
+
+            conference_manager.add_participant(friendly_name, call_sid, role)
+            print(f"[Conference Event] Participant joined as: {role}")
+
+            # If agent just joined, mark it in conversation manager
+            if role == 'agent' and friendly_name.startswith('call-room-'):
+                original_call_sid = friendly_name.replace('call-room-', '')
+                if original_call_sid in call_conversations:
+                    conv_mgr = call_conversations[original_call_sid]
+                    conv_mgr.mark_agent_joined()
+                    print(f"[Conference Event] Marked agent joined in conversation manager")
+
+    elif event == 'conference-end':
+        # Cleanup conference
+        conference_manager.cleanup_conference(friendly_name)
+        print(f"[Conference Event] Conference ended and cleaned up")
+
+    elif event == 'participant-leave':
+        print(f"[Conference Event] Participant left")
+
+    print()  # Blank line for readability
+
+    return ('', 200)
 
 
 def send_audio_via_websocket(session_id, audio_bytes):

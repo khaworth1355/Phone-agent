@@ -16,6 +16,7 @@ class ConversationState(Enum):
     AI_THINKING = "ai_thinking"
     AI_SPEAKING = "ai_speaking"
     COLLECTING_CUSTOMER_INFO = "collecting_customer_info"
+    HUMAN_CONVERSATION = "human_conversation"  # Agent is handling the call
 
 
 class ConversationManager:
@@ -65,6 +66,9 @@ class ConversationManager:
         self.detergent_needs_qb_update = False         # Flag if customer provided corrections
         self.detergent_qb_updates = {}                 # Dict of fields to update in QB
         self.detergent_collecting_email = False        # Flag when collecting email update
+
+        # Conference/routing fields
+        self.agent_joined_at = None  # Timestamp when human agent joined conference
 
         # Callbacks
         self.on_user_finished = None  # Callback when user finishes speaking
@@ -417,3 +421,13 @@ class ConversationManager:
         # Restore default pause threshold in case we were in the middle of structured data collection
         self.restore_default_pause_threshold()
         print(f"[ConversationManager] Cleared detergent order info")
+
+    def mark_agent_joined(self):
+        """
+        Mark that a human agent has joined the conference
+        Called when agent connects to enable proper speaker identification
+        """
+        from datetime import datetime
+        self.agent_joined_at = datetime.utcnow()
+        self.state = ConversationState.HUMAN_CONVERSATION
+        print(f"[ConversationManager] Agent joined conference, state: HUMAN_CONVERSATION")

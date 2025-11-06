@@ -115,6 +115,10 @@ class Config:
     # Development: Use Cloudflare tunnel or ngrok
     WEBSOCKET_URL = os.getenv('WEBSOCKET_URL', 'wss://localhost/media')
 
+    # Base URL for webhooks (HTTP/HTTPS version of WEBSOCKET_URL domain)
+    # Production: https://your-domain.com or https://YOUR_DROPLET_IP
+    BASE_URL = os.getenv('BASE_URL', 'https://localhost')
+
     # Conversation settings
     PAUSE_THRESHOLD = float(os.getenv('PAUSE_THRESHOLD', '0.3'))  # Seconds of silence before triggering response
     RESPONSE_TIMEOUT = float(os.getenv('RESPONSE_TIMEOUT', '15.0'))  # Max time for Claude/ElevenLabs

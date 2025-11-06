@@ -24,6 +24,7 @@ from conversation_manager import ConversationManager, ConversationState
 from claude_client import ClaudeAgent
 from elevenlabs_client import ElevenLabsClient
 from routing_engine import routing_engine
+from admin_routes import admin_bp
 
 # Ensure real-time console output
 sys.stdout.reconfigure(line_buffering=True) if hasattr(sys.stdout, 'reconfigure') else None
@@ -31,6 +32,10 @@ sys.stdout.reconfigure(line_buffering=True) if hasattr(sys.stdout, 'reconfigure'
 # Initialize Flask
 app = Flask(__name__)
 sock = Sock(app)
+
+# Register admin blueprint
+app.register_blueprint(admin_bp)
+print("[App] Admin dashboard registered at /admin")
 
 # Initialize Twilio client
 twilio_client = TwilioClient(Config.TWILIO_ACCOUNT_SID, Config.TWILIO_AUTH_TOKEN)

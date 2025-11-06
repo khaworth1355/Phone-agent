@@ -144,6 +144,10 @@ class Config:
     # Product Configuration
     DETERGENT_PRODUCT_NAME = os.getenv('DETERGENT_PRODUCT_NAME', 'Detergent')  # Exact product name in QuickBooks
 
+    # Admin interface settings
+    ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'changeme123')  # Change this in production!
+    ADMIN_ENABLED = os.getenv('ADMIN_ENABLED', 'true').lower() == 'true'
+
     # Flask settings
     PORT = int(os.getenv('PORT', 5000))
     DEBUG = os.getenv('DEBUG', 'False').lower() == 'true'

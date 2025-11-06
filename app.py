@@ -437,6 +437,24 @@ def home():
     return "Phone Agent Running!", 200
 
 
+@app.route("/status")
+def status():
+    """System status and active conferences"""
+    stats = conference_manager.get_stats()
+    active_conferences = conference_manager.list_active_conferences()
+
+    return jsonify({
+        'status': 'running',
+        'conferences': {
+            'active': stats['total_conferences'],
+            'with_agents': stats['conferences_with_agents'],
+            'waiting': stats['conferences_waiting'],
+            'conference_names': active_conferences
+        },
+        'base_url': Config.BASE_URL
+    })
+
+
 @app.route("/audio/<filename>")
 def serve_audio(filename):
     """Serve temporary audio files"""
@@ -511,7 +529,8 @@ def voice():
         conference_name,
         start_conference_on_enter=True,
         end_conference_on_exit=True,
-        wait_url='http://twimlets.com/holdmusic?Bucket=com.twilio.music.classical',
+        beep=False,  # No beep sound
+        wait_url='',  # No hold music - caller hears silence/AI responses
         status_callback=f"{Config.BASE_URL}/conference-status",
         status_callback_event=['start', 'end', 'join', 'leave']
     )

@@ -527,30 +527,21 @@ def voice():
     # Add brief pause after greeting to let Deepgram reset
     response.pause(length=0.5)
 
-    # Start media stream - capture BOTH tracks for conference (caller + agent)
+    # Start media stream - capture inbound audio only (caller's voice) initially
+    # We'll switch to both_tracks later when agent joins
     start = Start()
     stream = start.stream(url=Config.WEBSOCKET_URL)
-    # Capture both audio tracks to record caller + agent conversation
-    stream.parameter(name='track', value='both_tracks')
+    stream.parameter(name='track', value='inbound_track')
     response.append(start)
 
-    # Create conference room for this call
-    conference_name = conference_manager.create_conference(call_sid, normalized_phone if caller else 'Unknown')
+    # Keep call alive for conversation (10 minutes)
+    # AI will respond via TwiML updates
+    response.pause(length=600)
 
-    # Join caller to conference (enables routing while maintaining Media Stream)
-    dial = Dial()
-    dial.conference(
-        conference_name,
-        start_conference_on_enter=True,
-        end_conference_on_exit=True,
-        beep=False,  # No beep sound
-        wait_url='',  # No hold music - caller hears silence/AI responses
-        status_callback=f"{Config.BASE_URL}/conference-status",
-        status_callback_event=['start', 'end', 'join', 'leave']
-    )
-    response.append(dial)
+    # If call reaches this point (10 min timeout), say goodbye
+    response.say("Thank you for calling. Goodbye!", voice='Polly.Joanna')
 
-    print(f"[Voice] Created conference: {conference_name}")
+    print(f"[Voice] Call setup complete - AI will handle conversation")
 
     return str(response), 200, {'Content-Type': 'text/xml'}
 
@@ -741,7 +732,7 @@ def transfer_call(call_sid, phone_number, announcement_text="Transferring you no
 @app.route('/dial-agent', methods=['POST'])
 def dial_agent():
     """
-    Dial human agent into active conference
+    Transfer caller to conference with human agent
     Called after routing decision is made
 
     POST body: {
@@ -763,31 +754,58 @@ def dial_agent():
 
         conference_name = f"call-room-{call_sid}"
 
-        print(f"\n[DialAgent] Dialing {agent_phone} into conference {conference_name}")
+        print(f"\n[DialAgent] Creating conference and transferring call")
+        print(f"[DialAgent] Call SID: {call_sid}")
         print(f"[DialAgent] Department: {department}")
+        print(f"[DialAgent] Agent phone: {agent_phone}")
 
-        # Create outbound call to agent
-        call = twilio_client.calls.create(
+        # Get caller phone for conference tracking
+        caller_phone = call_phone_numbers.get(call_sid, 'Unknown')
+
+        # Create conference room
+        conference_manager.create_conference(call_sid, caller_phone)
+        print(f"[DialAgent] Created conference: {conference_name}")
+
+        # STEP 1: Transfer existing caller into the conference
+        caller_twiml = f'''<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say voice="Polly.Joanna">Please hold while I connect you to {department}.</Say>
+    <Start>
+        <Stream url="{Config.WEBSOCKET_URL}">
+            <Parameter name="track" value="both_tracks" />
+        </Stream>
+    </Start>
+    <Dial>
+        <Conference
+            startConferenceOnEnter="true"
+            endConferenceOnExit="true"
+            beep="false"
+            statusCallback="{Config.BASE_URL}/conference-status"
+            statusCallbackEvent="start end join leave">{conference_name}</Conference>
+    </Dial>
+</Response>'''
+
+        twilio_client.calls(call_sid).update(twiml=caller_twiml)
+        print(f"[DialAgent] ✓ Caller joined conference")
+
+        # STEP 2: Dial agent into conference
+        agent_call = twilio_client.calls.create(
             to=agent_phone,
             from_=Config.TWILIO_PHONE_NUMBER,
             twiml=f'''<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say voice="Polly.Joanna">Connecting you to a caller from {department}.</Say>
+    <Say voice="Polly.Joanna">You are being connected to a caller for {department}.</Say>
     <Dial>
-        <Conference>{conference_name}</Conference>
+        <Conference beep="false">{conference_name}</Conference>
     </Dial>
 </Response>'''
         )
 
-        print(f"[DialAgent] ✓ Agent call initiated: {call.sid}")
-
-        # TODO: Log routing decision to database when Phase 2 is implemented
-        # from database import create_call_route
-        # create_call_route({...})
+        print(f"[DialAgent] ✓ Agent call initiated: {agent_call.sid}")
 
         return jsonify({
             'status': 'success',
-            'agent_call_sid': call.sid,
+            'agent_call_sid': agent_call.sid,
             'conference': conference_name
         })
 

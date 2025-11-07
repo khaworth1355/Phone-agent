@@ -780,6 +780,8 @@ def dial_agent():
             startConferenceOnEnter="true"
             endConferenceOnExit="true"
             beep="false"
+            record="record-from-start"
+            recordingStatusCallback="{Config.BASE_URL}/recording-status"
             statusCallback="{Config.BASE_URL}/conference-status"
             statusCallbackEvent="start end join leave">{conference_name}</Conference>
     </Dial>
@@ -816,6 +818,33 @@ def dial_agent():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/recording-status', methods=['POST'])
+def recording_status():
+    """
+    Twilio webhook for recording status updates
+    Called when recording is completed
+    """
+    recording_sid = request.form.get('RecordingSid')
+    recording_url = request.form.get('RecordingUrl')
+    recording_status = request.form.get('RecordingStatus')
+    conference_sid = request.form.get('ConferenceSid')
+
+    print(f"\n[Recording Status] {recording_status}")
+    print(f"[Recording Status] Recording SID: {recording_sid}")
+    print(f"[Recording Status] Recording URL: {recording_url}")
+    print(f"[Recording Status] Conference SID: {conference_sid}")
+
+    # When recording is completed, trigger batch transcription
+    if recording_status == 'completed':
+        # Find conference by name (we need to look it up)
+        # The conference name is in the format call-room-{call_sid}
+        # We'll trigger the batch transcription in the conference-end event instead
+        # For now, just log that recording is ready
+        print(f"[Recording Status] ✓ Recording ready for transcription")
+
+    return ('', 200)
+
+
 @app.route('/conference-status', methods=['POST'])
 def conference_status():
     """
@@ -844,15 +873,43 @@ def conference_status():
             conference_manager.add_participant(friendly_name, call_sid, role)
             print(f"[Conference Event] Participant joined as: {role}")
 
-            # If agent just joined, mark it in conversation manager
+            # If agent just joined, mark it in conversation manager and stop real-time transcription
             if role == 'agent' and friendly_name.startswith('call-room-'):
                 original_call_sid = friendly_name.replace('call-room-', '')
                 if original_call_sid in call_conversations:
                     conv_mgr = call_conversations[original_call_sid]
-                    conv_mgr.mark_agent_joined()
-                    print(f"[Conference Event] Marked agent joined in conversation manager")
+
+                    # Define callback to stop all sessions for this call
+                    def stop_transcription():
+                        # Find all sessions for this call and stop them
+                        sessions_to_stop = [sid for sid, sess in sessions.items() if sess.get('call_sid') == original_call_sid]
+                        for sid in sessions_to_stop:
+                            print(f"[Conference Event] Stopping transcription session: {sid}")
+                            sessions[sid]['running'] = False
+
+                    conv_mgr.mark_agent_joined(stop_transcription_callback=stop_transcription)
+                    print(f"[Conference Event] Marked agent joined, stopped real-time transcription")
 
     elif event == 'conference-end':
+        # Get conference info before cleanup
+        conf_info = conference_manager.get_conference_by_name(friendly_name)
+
+        # Trigger batch transcription if this was a routed call (agent joined)
+        if conf_info and conf_info.get('agent_joined'):
+            original_call_sid = friendly_name.replace('call-room-', '')
+            print(f"[Conference Event] Conference with agent ended, will transcribe recording")
+
+            # Start background task to process recording
+            # Give Twilio a moment to finalize the recording
+            import threading
+            def process_recording_delayed():
+                import time
+                time.sleep(5)  # Wait 5 seconds for recording to be ready
+                process_conference_recording(original_call_sid, friendly_name)
+
+            thread = threading.Thread(target=process_recording_delayed, daemon=True)
+            thread.start()
+
         # Cleanup conference
         conference_manager.cleanup_conference(friendly_name)
         print(f"[Conference Event] Conference ended and cleaned up")
@@ -863,6 +920,158 @@ def conference_status():
     print()  # Blank line for readability
 
     return ('', 200)
+
+
+def process_conference_recording(call_sid, conference_name):
+    """
+    Download conference recording and transcribe with Deepgram diarization
+
+    Args:
+        call_sid: Original call SID
+        conference_name: Conference room name
+    """
+    import requests
+    from datetime import datetime
+
+    try:
+        print(f"\n[Batch Transcription] Processing recording for call {call_sid}")
+
+        # Step 1: Get recordings for this call from Twilio
+        recordings = twilio_client.recordings.list(call_sid=call_sid, limit=10)
+
+        if not recordings:
+            print(f"[Batch Transcription] No recordings found for call {call_sid}")
+            return
+
+        # Get the most recent recording (should be the conference recording)
+        recording = recordings[0]
+        recording_url = f"https://api.twilio.com{recording.uri.replace('.json', '.wav')}"
+
+        print(f"[Batch Transcription] Found recording: {recording.sid}")
+        print(f"[Batch Transcription] Duration: {recording.duration}s")
+        print(f"[Batch Transcription] Downloading from Twilio...")
+
+        # Step 2: Download the recording
+        auth = (Config.TWILIO_ACCOUNT_SID, Config.TWILIO_AUTH_TOKEN)
+        response = requests.get(recording_url, auth=auth, timeout=30)
+
+        if response.status_code != 200:
+            print(f"[Batch Transcription] Failed to download recording: {response.status_code}")
+            return
+
+        audio_data = response.content
+        print(f"[Batch Transcription] Downloaded {len(audio_data)} bytes")
+
+        # Step 3: Send to Deepgram for transcription with diarization
+        print(f"[Batch Transcription] Sending to Deepgram with diarization...")
+
+        deepgram_url = "https://api.deepgram.com/v1/listen"
+        params = {
+            'punctuate': 'true',
+            'diarize': 'true',  # Enable speaker diarization
+            'model': 'nova-2',
+            'language': 'en-US'
+        }
+
+        headers = {
+            'Authorization': f'Token {Config.DEEPGRAM_API_KEY}',
+            'Content-Type': 'audio/wav'
+        }
+
+        dg_response = requests.post(
+            deepgram_url,
+            params=params,
+            headers=headers,
+            data=audio_data,
+            timeout=60
+        )
+
+        if dg_response.status_code != 200:
+            print(f"[Batch Transcription] Deepgram error: {dg_response.status_code}")
+            print(f"[Batch Transcription] Response: {dg_response.text}")
+            return
+
+        result = dg_response.json()
+        print(f"[Batch Transcription] ✓ Deepgram transcription complete")
+
+        # Step 4: Parse diarized transcript
+        if 'results' not in result or 'channels' not in result['results']:
+            print(f"[Batch Transcription] Unexpected response format")
+            return
+
+        channel = result['results']['channels'][0]
+        alternatives = channel.get('alternatives', [])
+
+        if not alternatives:
+            print(f"[Batch Transcription] No transcript alternatives found")
+            return
+
+        words = alternatives[0].get('words', [])
+
+        if not words:
+            print(f"[Batch Transcription] No words with speaker info found")
+            return
+
+        # Step 5: Group words by speaker and create transcript entries
+        print(f"[Batch Transcription] Processing {len(words)} words...")
+
+        current_speaker = None
+        current_text = []
+        segment_count = 0
+
+        from database import create_transcript
+
+        for word_info in words:
+            speaker_id = word_info.get('speaker', 0)
+            word = word_info.get('word', '')
+
+            # Map speaker IDs to roles (0 = caller, 1 = agent)
+            speaker_label = 'caller' if speaker_id == 0 else 'agent'
+
+            if current_speaker is None:
+                current_speaker = speaker_label
+
+            if speaker_label != current_speaker:
+                # Speaker changed - save current segment
+                if current_text:
+                    text = ' '.join(current_text)
+                    create_transcript(
+                        call_sid=call_sid,
+                        speaker=current_speaker,
+                        text=text,
+                        is_final=True,
+                        confidence=None,
+                        transcription_type='batch'
+                    )
+                    segment_count += 1
+                    print(f"[Batch Transcription] {current_speaker}: {text}")
+
+                # Start new segment
+                current_speaker = speaker_label
+                current_text = [word]
+            else:
+                current_text.append(word)
+
+        # Save final segment
+        if current_text:
+            text = ' '.join(current_text)
+            create_transcript(
+                call_sid=call_sid,
+                speaker=current_speaker,
+                text=text,
+                is_final=True,
+                confidence=None,
+                transcription_type='batch'
+            )
+            segment_count += 1
+            print(f"[Batch Transcription] {current_speaker}: {text}")
+
+        print(f"[Batch Transcription] ✅ Stored {segment_count} diarized transcript segments")
+
+    except Exception as e:
+        print(f"[Batch Transcription] ❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 def send_audio_via_websocket(session_id, audio_bytes):

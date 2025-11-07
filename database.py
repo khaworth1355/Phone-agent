@@ -122,9 +122,10 @@ class CallTranscript(Base):
     confidence = Column(Numeric(3, 2))  # Deepgram confidence score
     timestamp = Column(DateTime, default=datetime.utcnow)
     segment_number = Column(Integer)  # Order in conversation (1, 2, 3...)
+    transcription_type = Column(String(20), default='realtime')  # 'realtime' (AI conversation) or 'batch' (diarized post-call)
 
     def __repr__(self):
-        return f"<CallTranscript(id={self.id}, call_sid='{self.call_sid}', speaker='{self.speaker}', segment={self.segment_number})>"
+        return f"<CallTranscript(id={self.id}, call_sid='{self.call_sid}', speaker='{self.speaker}', segment={self.segment_number}, type='{self.transcription_type}')>"
 
 
 class CallMetadata(Base):
@@ -387,7 +388,7 @@ def create_call_route(route_data):
         session.close()
 
 
-def create_transcript(call_sid, speaker, text, is_final, confidence=None):
+def create_transcript(call_sid, speaker, text, is_final, confidence=None, transcription_type='realtime'):
     """
     Create a new transcript entry
 
@@ -397,6 +398,7 @@ def create_transcript(call_sid, speaker, text, is_final, confidence=None):
         text: Transcript text
         is_final: True for final transcript, False for interim
         confidence: Optional confidence score (0.00-1.00)
+        transcription_type: 'realtime' (during AI conversation) or 'batch' (post-call diarized)
 
     Returns:
         Transcript ID
@@ -417,7 +419,8 @@ def create_transcript(call_sid, speaker, text, is_final, confidence=None):
             text=text,
             is_final=is_final,
             confidence=confidence,
-            segment_number=segment_number
+            segment_number=segment_number,
+            transcription_type=transcription_type
         )
 
         session.add(transcript)

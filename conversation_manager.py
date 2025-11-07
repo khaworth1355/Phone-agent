@@ -440,12 +440,20 @@ class ConversationManager:
         self.restore_default_pause_threshold()
         print(f"[ConversationManager] Cleared detergent order info")
 
-    def mark_agent_joined(self):
+    def mark_agent_joined(self, stop_transcription_callback=None):
         """
         Mark that a human agent has joined the conference
         Called when agent connects to enable proper speaker identification
+
+        Args:
+            stop_transcription_callback: Optional callback to stop real-time transcription
         """
         from datetime import datetime
         self.agent_joined_at = datetime.utcnow()
         self.state = ConversationState.HUMAN_CONVERSATION
         print(f"[ConversationManager] Agent joined conference, state: HUMAN_CONVERSATION")
+
+        # Stop real-time transcription - we'll use post-call batch processing instead
+        if stop_transcription_callback:
+            print(f"[ConversationManager] Stopping real-time transcription...")
+            stop_transcription_callback()

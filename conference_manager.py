@@ -33,7 +33,9 @@ class ConferenceManager:
             'participants': [],
             'agent_joined': False,
             'caller_participant_sid': None,
-            'agent_participant_sid': None
+            'agent_participant_sid': None,
+            'recording_sid': None,
+            'recording_url': None
         }
 
         print(f"[ConferenceManager] Created conference: {conference_name}")
@@ -158,6 +160,22 @@ class ConferenceManager:
             'conferences_with_agents': with_agents,
             'conferences_waiting': total - with_agents
         }
+
+    def set_recording_info(self, conference_name: str, recording_sid: str, recording_url: str):
+        """
+        Store recording information for a conference
+
+        Args:
+            conference_name: Conference room name
+            recording_sid: Twilio recording SID
+            recording_url: URL to download recording
+        """
+        if conference_name in self.active_conferences:
+            self.active_conferences[conference_name]['recording_sid'] = recording_sid
+            self.active_conferences[conference_name]['recording_url'] = recording_url
+            print(f"[ConferenceManager] Stored recording info for {conference_name}: {recording_sid}")
+        else:
+            print(f"[ConferenceManager] Warning: Conference {conference_name} not found for recording info")
 
 
 # Global instance

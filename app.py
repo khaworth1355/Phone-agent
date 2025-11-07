@@ -1094,6 +1094,11 @@ async def handle_ai_response(session_id):
     call_sid = session['call_sid']
 
     try:
+        # Skip AI response if agent has joined conference
+        if conv_mgr.state == ConversationState.HUMAN_CONVERSATION:
+            print(f"[AI] Skipping AI response - agent is handling the call")
+            return
+
         # Mark AI as speaking (for barge-in detection)
         conv_mgr.start_ai_response()
 
@@ -1878,6 +1883,11 @@ def deepgram_worker(session_id, call_sid):
         """Callback when stable interim detected - start generating response early"""
         nonlocal predictive_response_data
 
+        # CRITICAL: Disable predictive responses when agent has joined
+        if conv_mgr.state == ConversationState.HUMAN_CONVERSATION:
+            print(f"[Predictive] ⚠️ Skipping - agent is handling the call")
+            return
+
         # CRITICAL: Disable predictive responses during detergent workflow
         # Predictive responses break the strict sequential order required for state-based forced responses
         if DETERGENT_WORKFLOW_ENABLED and conv_mgr.collecting_detergent_info:
@@ -2064,6 +2074,12 @@ def deepgram_worker(session_id, call_sid):
 
                     # Check if user has paused speaking
                     if conv_mgr.check_for_pause():
+                        # IMPORTANT: Skip AI response if agent has joined conference
+                        if conv_mgr.state == ConversationState.HUMAN_CONVERSATION:
+                            print(f"[Deepgram] Skipping AI response - agent is handling the call")
+                            conv_mgr.reset()  # Clear the buffer but don't respond
+                            continue
+
                         response_start_time = time.time()
                         user_text = conv_mgr.get_user_text()
                         print(f"\n[TIMING] Response generation starting for: '{user_text}'")

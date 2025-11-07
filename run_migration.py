@@ -46,29 +46,35 @@ def run_migration():
         executed = 0
 
         for statement in statements:
-            statement = statement.strip()
-            # Skip empty statements and comments
-            if statement and not statement.startswith('--'):
-                try:
-                    cursor.execute(statement)
-                    executed += 1
-                    # Show what we're doing
-                    if 'ALTER TABLE' in statement:
-                        print("  ✓ Added column: transcription_type")
-                    elif 'UPDATE' in statement:
-                        print("  ✓ Updated existing records")
-                    elif 'CREATE INDEX' in statement:
-                        print("  ✓ Created index: idx_transcripts_type")
-                    elif 'COMMENT' in statement:
-                        print("  ✓ Added column comment")
-                except psycopg2.Error as e:
-                    # Check if error is because column already exists
-                    if 'already exists' in str(e):
-                        print(f"  ⚠️  Already applied: {str(e).split(':')[0]}")
-                        conn.rollback()
-                        # Continue with next statement
-                    else:
-                        raise
+            # Remove comment lines and strip whitespace
+            lines = statement.split('\n')
+            clean_lines = [line for line in lines if not line.strip().startswith('--')]
+            clean_statement = '\n'.join(clean_lines).strip()
+
+            # Skip empty statements
+            if not clean_statement:
+                continue
+
+            try:
+                cursor.execute(clean_statement)
+                executed += 1
+                # Show what we're doing
+                if 'ALTER TABLE' in clean_statement:
+                    print("  ✓ Added column: transcription_type")
+                elif 'UPDATE' in clean_statement:
+                    print("  ✓ Updated existing records")
+                elif 'CREATE INDEX' in clean_statement:
+                    print("  ✓ Created index: idx_transcripts_type")
+                elif 'COMMENT' in clean_statement:
+                    print("  ✓ Added column comment")
+            except psycopg2.Error as e:
+                # Check if error is because column already exists
+                if 'already exists' in str(e):
+                    print(f"  ⚠️  Already applied: {str(e).split(':')[0]}")
+                    conn.rollback()
+                    # Continue with next statement
+                else:
+                    raise
 
         conn.commit()
         print(f"✓ Executed {executed} statements")

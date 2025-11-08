@@ -25,18 +25,27 @@ class DeepgramClient:
         self.total_bytes_sent = 0
 
     async def connect(self):
-        """Connect to Deepgram"""
+        """Connect to Deepgram with enhanced accuracy settings"""
         try:
-            print("[Deepgram] Connecting...")
+            print("[Deepgram] Connecting with enhanced model...")
 
             options = {
                 'punctuate': True,
                 'interim_results': True,
                 'language': 'en-US',
-                'model': 'nova-2',
+                'model': 'nova-2-phonecall',  # UPGRADED: Optimized for phone calls
                 'encoding': 'mulaw',
                 'sample_rate': 8000,
-                'channels': 1
+                'channels': 1,
+                'smart_format': True,  # NEW: Better formatting of numbers, dates, times
+                'filler_words': True,  # NEW: Detect um, uh, etc.
+                'profanity_filter': False,  # Keep actual words spoken
+                # Custom vocabulary for domain-specific terms
+                'keywords': [
+                    'TEMCO', 'detergent', 'all-purpose', 'aluminum-specific',
+                    'QuickBooks', 'invoice', 'sales', 'support', 'billing'
+                ],
+                'keywords_boost': 2.0  # Prefer these words when ambiguous
             }
 
             self.connection = await self.deepgram.transcription.live(options)

@@ -781,6 +781,7 @@ def dial_agent():
             endConferenceOnExit="true"
             beep="false"
             record="record-from-start"
+            recordingChannels="dual"
             recordingStatusCallback="{Config.BASE_URL}/recording-status"
             statusCallback="{Config.BASE_URL}/conference-status"
             statusCallbackEvent="start end join leave">{conference_name}</Conference>
@@ -922,6 +923,139 @@ def conference_status():
     return ('', 200)
 
 
+def post_process_transcript_with_claude(call_sid):
+    """
+    Use Claude AI to post-process and correct transcripts for better accuracy
+
+    Args:
+        call_sid: Call SID to process
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        from database import get_call_transcripts, create_transcript
+        import anthropic
+
+        # Get batch transcripts for this call
+        print(f"[Claude Post-Process] Fetching batch transcripts for {call_sid}...")
+        session = get_session()
+        from database import CallTranscript
+
+        transcripts = session.query(CallTranscript).filter_by(
+            call_sid=call_sid,
+            transcription_type='batch',
+            is_final=True
+        ).order_by(CallTranscript.segment_number).all()
+
+        session.close()
+
+        if not transcripts:
+            print(f"[Claude Post-Process] No batch transcripts found to process")
+            return False
+
+        if len(transcripts) == 0:
+            return False
+
+        # Build conversation text
+        conversation_lines = []
+        for t in transcripts:
+            speaker_label = "Caller" if t.speaker == 'caller' else "Agent"
+            confidence_marker = f" [low conf]" if t.confidence and t.confidence < 0.85 else ""
+            conversation_lines.append(f"{speaker_label}: {t.text}{confidence_marker}")
+
+        conversation_text = "\n".join(conversation_lines)
+
+        print(f"[Claude Post-Process] Processing {len(transcripts)} segments with Claude...")
+
+        # Use Claude to correct the transcript
+        client = anthropic.Anthropic(api_key=Config.ANTHROPIC_API_KEY)
+
+        correction_prompt = f"""You are a transcript correction assistant. Your job is to improve the accuracy and readability of phone call transcripts.
+
+Original Transcript:
+{conversation_text}
+
+Please correct this transcript by:
+1. Fixing obvious transcription errors (misheard words, typos)
+2. Improving punctuation and capitalization
+3. Formatting numbers, dates, and times consistently
+4. Correcting domain-specific terms (TEMCO, detergent products, QuickBooks, etc.)
+5. Keeping the same speaker labels (Caller: / Agent:)
+6. NOT changing the meaning or adding information
+7. Paying special attention to lines marked [low conf] as they likely contain errors
+
+Context: This is a business phone call for TEMCO, a detergent sales company. Common terms include:
+- TEMCO (company name)
+- All-purpose detergent
+- Aluminum-specific detergent
+- QuickBooks (accounting software)
+- Invoice, billing, sales, support
+
+Return ONLY the corrected transcript in the same format (Speaker: text), one line per segment. Do not add explanations."""
+
+        response = client.messages.create(
+            model="claude-3-5-sonnet-20241022",
+            max_tokens=4000,
+            messages=[{
+                "role": "user",
+                "content": correction_prompt
+            }]
+        )
+
+        corrected_text = response.content[0].text.strip()
+
+        # Parse corrected transcript and update database
+        corrected_lines = corrected_text.split('\n')
+        updates_made = 0
+
+        for i, line in enumerate(corrected_lines):
+            if ':' not in line:
+                continue
+
+            parts = line.split(':', 1)
+            if len(parts) != 2:
+                continue
+
+            speaker_label = parts[0].strip().lower()
+            corrected_segment = parts[1].strip()
+
+            # Map back to database speaker format
+            speaker = 'caller' if 'caller' in speaker_label else 'agent'
+
+            # Find corresponding transcript segment (by index)
+            if i < len(transcripts):
+                original = transcripts[i]
+
+                # Only update if there's a meaningful change
+                if original.text.strip() != corrected_segment.strip():
+                    # Update the existing transcript
+                    session = get_session()
+                    transcript_to_update = session.query(CallTranscript).filter_by(
+                        id=original.id
+                    ).first()
+
+                    if transcript_to_update:
+                        old_text = transcript_to_update.text
+                        transcript_to_update.text = corrected_segment
+                        session.commit()
+                        updates_made += 1
+                        print(f"[Claude Post-Process] Updated segment {i+1}:")
+                        print(f"  Before: {old_text}")
+                        print(f"  After:  {corrected_segment}")
+
+                    session.close()
+
+        print(f"[Claude Post-Process] ✅ Updated {updates_made} of {len(transcripts)} segments")
+        return True
+
+    except Exception as e:
+        print(f"[Claude Post-Process] ❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
 def process_conference_recording(call_sid, conference_name):
     """
     Download conference recording and transcribe with Deepgram diarization
@@ -962,15 +1096,21 @@ def process_conference_recording(call_sid, conference_name):
         audio_data = response.content
         print(f"[Batch Transcription] Downloaded {len(audio_data)} bytes")
 
-        # Step 3: Send to Deepgram for transcription with diarization
-        print(f"[Batch Transcription] Sending to Deepgram with diarization...")
+        # Step 3: Send to Deepgram for transcription with enhanced diarization
+        print(f"[Batch Transcription] Sending to Deepgram with enhanced diarization...")
 
         deepgram_url = "https://api.deepgram.com/v1/listen"
         params = {
             'punctuate': 'true',
             'diarize': 'true',  # Enable speaker diarization
-            'model': 'nova-2',
-            'language': 'en-US'
+            'model': 'nova-2-phonecall',  # UPGRADED: Optimized for phone calls
+            'language': 'en-US',
+            'smart_format': 'true',  # NEW: Better formatting of numbers, dates, times
+            'utterances': 'true',  # NEW: Group words into natural speech segments
+            'paragraphs': 'true',  # NEW: Group utterances into logical paragraphs
+            'profanity_filter': 'false',  # Keep actual words spoken
+            # Custom vocabulary for better accuracy
+            'keywords': 'TEMCO:2.0,detergent:2.0,all-purpose:2.0,aluminum-specific:2.0,QuickBooks:2.0,invoice:1.5,sales:1.5,support:1.5,billing:1.5'
         }
 
         headers = {
@@ -1012,18 +1152,28 @@ def process_conference_recording(call_sid, conference_name):
             print(f"[Batch Transcription] No words with speaker info found")
             return
 
-        # Step 5: Group words by speaker and create transcript entries
-        print(f"[Batch Transcription] Processing {len(words)} words...")
+        # Step 5: Group words by speaker and create transcript entries with confidence filtering
+        print(f"[Batch Transcription] Processing {len(words)} words with confidence filtering...")
 
         current_speaker = None
         current_text = []
+        confidence_scores = []
         segment_count = 0
+        filtered_count = 0
+        CONFIDENCE_THRESHOLD = 0.7  # Filter out words below 70% confidence
 
         from database import create_transcript
 
         for word_info in words:
             speaker_id = word_info.get('speaker', 0)
             word = word_info.get('word', '')
+            confidence = word_info.get('confidence', 1.0)  # Default to 1.0 if not provided
+
+            # Filter low-confidence words to reduce errors
+            if confidence < CONFIDENCE_THRESHOLD:
+                filtered_count += 1
+                print(f"[Batch Transcription] Filtered low-confidence word: '{word}' ({confidence:.2f})")
+                continue
 
             # Map speaker IDs to roles (0 = caller, 1 = agent)
             speaker_label = 'caller' if speaker_id == 0 else 'agent'
@@ -1035,38 +1185,54 @@ def process_conference_recording(call_sid, conference_name):
                 # Speaker changed - save current segment
                 if current_text:
                     text = ' '.join(current_text)
+                    avg_confidence = sum(confidence_scores) / len(confidence_scores) if confidence_scores else None
                     create_transcript(
                         call_sid=call_sid,
                         speaker=current_speaker,
                         text=text,
                         is_final=True,
-                        confidence=None,
+                        confidence=avg_confidence,
                         transcription_type='batch'
                     )
                     segment_count += 1
-                    print(f"[Batch Transcription] {current_speaker}: {text}")
+                    conf_str = f" (conf: {avg_confidence:.2f})" if avg_confidence else ""
+                    print(f"[Batch Transcription] {current_speaker}: {text}{conf_str}")
 
                 # Start new segment
                 current_speaker = speaker_label
                 current_text = [word]
+                confidence_scores = [confidence]
             else:
                 current_text.append(word)
+                confidence_scores.append(confidence)
 
         # Save final segment
         if current_text:
             text = ' '.join(current_text)
+            avg_confidence = sum(confidence_scores) / len(confidence_scores) if confidence_scores else None
             create_transcript(
                 call_sid=call_sid,
                 speaker=current_speaker,
                 text=text,
                 is_final=True,
-                confidence=None,
+                confidence=avg_confidence,
                 transcription_type='batch'
             )
             segment_count += 1
-            print(f"[Batch Transcription] {current_speaker}: {text}")
+            conf_str = f" (conf: {avg_confidence:.2f})" if avg_confidence else ""
+            print(f"[Batch Transcription] {current_speaker}: {text}{conf_str}")
 
         print(f"[Batch Transcription] ✅ Stored {segment_count} diarized transcript segments")
+        if filtered_count > 0:
+            print(f"[Batch Transcription] ⚠️  Filtered {filtered_count} low-confidence words")
+
+        # Step 6: Post-process with Claude for improved accuracy
+        print(f"[Batch Transcription] Starting Claude post-processing...")
+        claude_corrected = post_process_transcript_with_claude(call_sid)
+        if claude_corrected:
+            print(f"[Batch Transcription] ✅ Claude post-processing complete")
+        else:
+            print(f"[Batch Transcription] ⚠️  Claude post-processing skipped or failed")
 
     except Exception as e:
         print(f"[Batch Transcription] ❌ Error: {e}")

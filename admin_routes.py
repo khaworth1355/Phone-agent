@@ -478,8 +478,10 @@ If the user asks about calls or data not in the provided transcripts, say so cle
         })
 
         # Call Claude API
+        # Use the same model as configured in Config (defaults to Haiku)
+        model = Config.CLAUDE_MODEL or 'claude-3-haiku-20240307'
         response = client.messages.create(
-            model='claude-3-5-sonnet-20240620',  # Use Sonnet for better analysis
+            model=model,
             max_tokens=2000,
             system=system_prompt,
             messages=messages

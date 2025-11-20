@@ -479,7 +479,7 @@ If the user asks about calls or data not in the provided transcripts, say so cle
 
         # Call Claude API
         response = client.messages.create(
-            model='claude-3-5-sonnet-20241022',  # Use Sonnet for better analysis
+            model='claude-3-5-sonnet-20240620',  # Use Sonnet for better analysis
             max_tokens=2000,
             system=system_prompt,
             messages=messages

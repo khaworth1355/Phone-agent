@@ -1,12 +1,15 @@
 """
 Admin API Routes - Manage departments and routing rules via REST API
 """
-from flask import Blueprint, request, jsonify, render_template
+from flask import Blueprint, request, jsonify, render_template, session
 from functools import wraps
 from datetime import datetime, timedelta
 from sqlalchemy import func
 from database import get_session, Department, RoutingRule, CallRoute, CallTranscript
 from config import Config
+import anthropic
+import os
+import re
 
 admin_bp = Blueprint('admin', __name__, url_prefix='/admin')
 
@@ -365,6 +368,140 @@ def test_routing():
         'reason': decision.reason,
         'needs_confirmation': decision.needs_confirmation
     })
+
+
+# ==================== AI TRANSCRIPT ASSISTANT ====================
+
+@admin_bp.route('/ai-assistant', methods=['POST'])
+@require_admin_auth
+def ai_assistant():
+    """POST /admin/ai-assistant - Query Claude about call transcripts"""
+    data = request.json
+    user_query = data.get('query', '')
+    conversation_history = data.get('history', [])  # [{role, content}, ...]
+
+    if not user_query:
+        return jsonify({'error': 'Query required'}), 400
+
+    db_session = get_session()
+    try:
+        # Retrieve all final transcripts from database
+        # Query last 1000 transcripts to limit scope (adjust as needed)
+        transcripts = db_session.query(CallTranscript).filter_by(
+            is_final=True
+        ).order_by(CallTranscript.timestamp.desc()).limit(1000).all()
+
+        # Group transcripts by call_sid
+        calls_data = {}
+        for t in transcripts:
+            if t.call_sid not in calls_data:
+                calls_data[t.call_sid] = {
+                    'call_sid': t.call_sid,
+                    'transcripts': []
+                }
+            calls_data[t.call_sid]['transcripts'].append({
+                'timestamp': t.timestamp.isoformat() if t.timestamp else None,
+                'speaker': t.speaker,
+                'text': t.text,
+                'segment_number': t.segment_number
+            })
+
+        # Get call metadata (caller phone, department, etc.)
+        for call_sid in calls_data.keys():
+            route = db_session.query(CallRoute).filter_by(call_sid=call_sid).first()
+            if route:
+                calls_data[call_sid]['caller_phone'] = route.caller_phone
+                calls_data[call_sid]['department'] = route.routing_decision
+                calls_data[call_sid]['created_at'] = route.created_at.isoformat() if route.created_at else None
+
+        # Sort transcripts within each call by segment_number
+        for call_sid in calls_data:
+            calls_data[call_sid]['transcripts'].sort(key=lambda x: x.get('segment_number', 0))
+
+        # Format transcripts for Claude (limit to reasonable size)
+        # Include up to 50 most recent calls
+        recent_calls = list(calls_data.values())[:50]
+
+        transcript_context = "# Call Transcripts Database\n\n"
+        for call in recent_calls:
+            transcript_context += f"## Call: {call['call_sid']}\n"
+            transcript_context += f"- Caller: {call.get('caller_phone', 'Unknown')}\n"
+            transcript_context += f"- Department: {call.get('department', 'Unknown')}\n"
+            transcript_context += f"- Date: {call.get('created_at', 'Unknown')}\n\n"
+            transcript_context += "Transcript:\n"
+            for t in call['transcripts']:
+                time = t['timestamp'].split('T')[1][:8] if t['timestamp'] else '??:??:??'
+                transcript_context += f"[{time}] {t['speaker'].upper()}: {t['text']}\n"
+            transcript_context += "\n---\n\n"
+
+        # Build system prompt for Claude
+        system_prompt = """You are an AI assistant helping analyze call transcripts for a phone agent system.
+
+Your task is to answer questions about the call transcripts provided. When answering:
+
+1. **Be specific and cite sources**: Always reference specific calls using their call_sid (e.g., "In call CA123...")
+2. **Include relevant excerpts**: When citing a call, include the exact transcript excerpt in quotes
+3. **Analyze patterns**: Look for trends, common themes, or patterns across multiple calls
+4. **Be accurate**: Only make claims you can support with the transcript data provided
+5. **Format citations clearly**: Use this format for citations:
+
+   > **Call CA123456** (2025-11-20, Sales)
+   > CALLER: "I want to order some detergent"
+   > AI: "I can help with that"
+
+6. **Provide insights**: Don't just list calls - analyze what they mean, identify trends, suggest improvements
+
+If the user asks about calls or data not in the provided transcripts, say so clearly."""
+
+        # Call Claude API
+        api_key = os.getenv('ANTHROPIC_API_KEY') or Config.ANTHROPIC_API_KEY
+        if not api_key:
+            return jsonify({'error': 'Anthropic API key not configured'}), 500
+
+        client = anthropic.Anthropic(api_key=api_key)
+
+        # Build messages array with conversation history
+        messages = []
+
+        # Add conversation history if provided
+        for msg in conversation_history:
+            if msg.get('role') in ['user', 'assistant']:
+                messages.append({
+                    'role': msg['role'],
+                    'content': msg['content']
+                })
+
+        # Add current query with transcript context
+        messages.append({
+            'role': 'user',
+            'content': f"{transcript_context}\n\n---\n\n**User Question:** {user_query}"
+        })
+
+        # Call Claude API
+        response = client.messages.create(
+            model='claude-3-5-sonnet-20241022',  # Use Sonnet for better analysis
+            max_tokens=2000,
+            system=system_prompt,
+            messages=messages
+        )
+
+        assistant_response = response.content[0].text
+
+        # Extract citations and format them
+        # Look for call_sid patterns (CA followed by hex digits)
+        cited_calls = re.findall(r'(CA[a-f0-9]{32})', assistant_response, re.IGNORECASE)
+        cited_calls = list(set(cited_calls))  # Remove duplicates
+
+        return jsonify({
+            'response': assistant_response,
+            'cited_calls': cited_calls,
+            'transcript_count': len(recent_calls)
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        db_session.close()
 
 
 # ==================== DASHBOARD PAGE ====================

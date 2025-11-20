@@ -125,6 +125,125 @@
         .speaker-caller { color: #2196F3; }
         .speaker-agent { color: #4CAF50; }
         .speaker-ai { color: #FF9800; }
+
+        /* Chat Interface Styles */
+        #chat-container {
+            background: #f9f9f9;
+            border: 1px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 20px;
+            max-height: 500px;
+            overflow-y: auto;
+            margin-bottom: 15px;
+            min-height: 200px;
+        }
+
+        #chat-messages {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+
+        .chat-message {
+            display: flex;
+            gap: 10px;
+            animation: fadeIn 0.3s;
+        }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .chat-message.user {
+            justify-content: flex-end;
+        }
+
+        .chat-bubble {
+            max-width: 70%;
+            padding: 12px 16px;
+            border-radius: 12px;
+            word-wrap: break-word;
+        }
+
+        .chat-message.user .chat-bubble {
+            background: #4CAF50;
+            color: white;
+            border-bottom-right-radius: 4px;
+        }
+
+        .chat-message.assistant .chat-bubble {
+            background: white;
+            border: 1px solid #e0e0e0;
+            border-bottom-left-radius: 4px;
+        }
+
+        .chat-bubble blockquote {
+            margin: 10px 0;
+            padding: 10px;
+            background: #f5f5f5;
+            border-left: 3px solid #2196F3;
+            font-size: 13px;
+        }
+
+        .chat-bubble strong {
+            color: #2196F3;
+        }
+
+        #chat-input-area {
+            margin-top: 15px;
+        }
+
+        #chat-input {
+            width: 100%;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            font-size: 14px;
+            font-family: inherit;
+            resize: vertical;
+            min-height: 50px;
+        }
+
+        #chat-input:focus {
+            outline: none;
+            border-color: #4CAF50;
+        }
+
+        #chat-loading {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px;
+            margin-top: 10px;
+        }
+
+        .loading-dots {
+            display: flex;
+            gap: 5px;
+        }
+
+        .loading-dots span {
+            width: 8px;
+            height: 8px;
+            background: #4CAF50;
+            border-radius: 50%;
+            animation: bounce 1.4s infinite ease-in-out both;
+        }
+
+        .loading-dots span:nth-child(1) { animation-delay: -0.32s; }
+        .loading-dots span:nth-child(2) { animation-delay: -0.16s; }
+
+        @keyframes bounce {
+            0%, 80%, 100% { transform: scale(0); }
+            40% { transform: scale(1); }
+        }
+
+        .chat-empty-state {
+            text-align: center;
+            color: #999;
+            padding: 40px 20px;
+        }
     </style>
 </head>
 <body>
@@ -197,6 +316,35 @@
                 </thead>
                 <tbody id="calls-body"></tbody>
             </table>
+        </div>
+
+        <!-- AI Transcript Assistant Section -->
+        <div class="section">
+            <h2>🤖 AI Transcript Assistant</h2>
+            <p style="color: #777; margin-bottom: 15px;">Ask Claude questions about your call transcripts</p>
+
+            <!-- Chat Container -->
+            <div id="chat-container">
+                <div id="chat-messages"></div>
+                <div id="chat-loading" style="display: none;">
+                    <div class="loading-dots">
+                        <span></span><span></span><span></span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Input Area -->
+            <div id="chat-input-area">
+                <textarea
+                    id="chat-input"
+                    placeholder="Ask a question about your call transcripts..."
+                    rows="2"
+                ></textarea>
+                <div style="display: flex; gap: 10px; margin-top: 10px;">
+                    <button class="btn-primary" onclick="sendChatMessage()">Send</button>
+                    <button class="btn-secondary" onclick="clearChat()">Clear Conversation</button>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -488,10 +636,145 @@
             document.getElementById(id).style.display = 'none';
         }
 
+        // ==================== AI CHAT FUNCTIONS ====================
+
+        let chatHistory = [];  // Store conversation history
+
+        // Initialize chat on page load
+        function initializeChat() {
+            const messagesDiv = document.getElementById('chat-messages');
+            if (chatHistory.length === 0) {
+                messagesDiv.innerHTML = '<div class="chat-empty-state">Ask me anything about your call transcripts!</div>';
+            }
+        }
+
+        // Send chat message
+        async function sendChatMessage() {
+            const input = document.getElementById('chat-input');
+            const query = input.value.trim();
+
+            if (!query) return;
+
+            // Add user message to UI
+            addMessageToUI('user', query);
+
+            // Clear input
+            input.value = '';
+
+            // Add user message to history
+            chatHistory.push({ role: 'user', content: query });
+
+            // Show loading indicator
+            document.getElementById('chat-loading').style.display = 'block';
+
+            try {
+                // Call API
+                const res = await fetch('/admin/ai-assistant', {
+                    method: 'POST',
+                    headers: headers,
+                    body: JSON.stringify({
+                        query: query,
+                        history: chatHistory.slice(0, -1)  // Don't include current message
+                    })
+                });
+
+                const data = await res.json();
+
+                // Hide loading
+                document.getElementById('chat-loading').style.display = 'none';
+
+                if (res.ok) {
+                    // Add assistant response to UI
+                    addMessageToUI('assistant', data.response);
+
+                    // Add to history
+                    chatHistory.push({ role: 'assistant', content: data.response });
+
+                    // Log cited calls if any
+                    if (data.cited_calls && data.cited_calls.length > 0) {
+                        console.log('Cited calls:', data.cited_calls);
+                    }
+                } else {
+                    addMessageToUI('assistant', '❌ Error: ' + (data.error || 'Failed to get response'));
+                }
+            } catch (error) {
+                document.getElementById('chat-loading').style.display = 'none';
+                addMessageToUI('assistant', '❌ Error: ' + error.message);
+            }
+
+            // Scroll to bottom
+            scrollChatToBottom();
+        }
+
+        // Add message to UI
+        function addMessageToUI(role, content) {
+            const messagesDiv = document.getElementById('chat-messages');
+
+            // Remove empty state if exists
+            const emptyState = messagesDiv.querySelector('.chat-empty-state');
+            if (emptyState) {
+                emptyState.remove();
+            }
+
+            // Create message element
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `chat-message ${role}`;
+
+            const bubbleDiv = document.createElement('div');
+            bubbleDiv.className = 'chat-bubble';
+
+            // Format the content (convert markdown-style quotes to blockquotes)
+            let formattedContent = content;
+
+            // Convert markdown blockquotes (lines starting with >) to HTML blockquotes
+            formattedContent = formattedContent.replace(/^> (.+)$/gm, '<blockquote>$1</blockquote>');
+
+            // Convert **bold** to <strong>
+            formattedContent = formattedContent.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+
+            // Convert newlines to <br>
+            formattedContent = formattedContent.replace(/\n/g, '<br>');
+
+            bubbleDiv.innerHTML = formattedContent;
+
+            messageDiv.appendChild(bubbleDiv);
+            messagesDiv.appendChild(messageDiv);
+        }
+
+        // Scroll chat to bottom
+        function scrollChatToBottom() {
+            const container = document.getElementById('chat-container');
+            container.scrollTop = container.scrollHeight;
+        }
+
+        // Clear chat
+        function clearChat() {
+            if (!confirm('Clear conversation history?')) return;
+
+            chatHistory = [];
+            document.getElementById('chat-messages').innerHTML = '<div class="chat-empty-state">Ask me anything about your call transcripts!</div>';
+        }
+
+        // Allow Enter to send (Shift+Enter for new line)
+        document.addEventListener('DOMContentLoaded', function() {
+            const chatInput = document.getElementById('chat-input');
+            if (chatInput) {
+                chatInput.addEventListener('keydown', function(e) {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        sendChatMessage();
+                    }
+                });
+            }
+        });
+
+        // ==================== END AI CHAT FUNCTIONS ====================
+
         // Initial load
         loadAll();
+        initializeChat();
 
-        // Refresh every 30 seconds
+        // Refresh every 30 seconds (but don't refresh chat)
         setInterval(loadAll, 30000);
     </script>
 </body>

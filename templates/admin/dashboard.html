@@ -280,6 +280,7 @@
         let currentDeptId = null;
         let currentRuleId = null;
         let departments = [];
+        let rules = [];
 
         // Load all data
         async function loadAll() {
@@ -317,7 +318,7 @@
 
         async function loadRules() {
             const res = await fetch('/admin/routing-rules', { headers });
-            const rules = await res.json();
+            rules = await res.json();
 
             const tbody = document.getElementById('rules-body');
             tbody.innerHTML = rules.map(r => `
@@ -408,6 +409,26 @@
             const select = document.getElementById('rule-dept');
             select.innerHTML = departments.map(d =>
                 `<option value="${d.id}">${d.name}</option>`
+            ).join('');
+
+            document.getElementById('rule-modal').style.display = 'block';
+        }
+
+        function editRule(id) {
+            const rule = rules.find(r => r.id === id);
+            if (!rule) return;
+
+            currentRuleId = id;
+            document.getElementById('rule-modal-title').textContent = 'Edit Routing Rule';
+            document.getElementById('rule-name').value = rule.rule_name;
+            document.getElementById('rule-keywords').value = rule.keywords.join(', ');
+            document.getElementById('rule-priority').value = rule.priority;
+            document.getElementById('rule-active').checked = rule.active;
+
+            // Populate department dropdown and select current
+            const select = document.getElementById('rule-dept');
+            select.innerHTML = departments.map(d =>
+                `<option value="${d.id}" ${d.id === rule.department_id ? 'selected' : ''}>${d.name}</option>`
             ).join('');
 
             document.getElementById('rule-modal').style.display = 'block';

@@ -47,9 +47,7 @@ os.makedirs(TEMP_AUDIO_DIR, exist_ok=True)
 # ==============================================================================
 # FEATURE FLAGS
 # ==============================================================================
-DETERGENT_WORKFLOW_ENABLED = False  # Set to True to re-enable detergent ordering
-# Note: Detergent workflow disabled 2025-11-05 for call routing system
-# See CALL_ROUTING_TRANSFORMATION_PLAN.md for details
+# (No feature flags currently active)
 # ==============================================================================
 
 # Store active sessions
@@ -497,7 +495,6 @@ def voice():
     print(f"From: {caller}")
     print("="*80 + "\n")
 
-    # Store caller phone number for QuickBooks lookup
     # Normalize phone number: remove + prefix AND country code (1) to match format used when customer speaks their phone
     # Twilio sends: +18166741783, User speaks: 8166741783
     if caller:
@@ -628,7 +625,7 @@ def media(ws):
                     'conversation_manager': conv_mgr,
                     'claude_agent': claude,
                     'elevenlabs_client': ElevenLabsClient(),
-                    'caller_number': caller_phone,  # Store caller phone for QuickBooks lookup
+                    'caller_number': caller_phone,
                 }
 
                 # Start Deepgram worker
@@ -980,7 +977,7 @@ Please correct this transcript by:
 1. Fixing obvious transcription errors (misheard words, typos)
 2. Improving punctuation and capitalization
 3. Formatting numbers, dates, and times consistently
-4. Correcting domain-specific terms (TEMCO, detergent products, QuickBooks, etc.)
+4. Correcting domain-specific terms (TEMCO, detergent products, etc.)
 5. Keeping the same speaker labels (Caller: / Agent:)
 6. NOT changing the meaning or adding information
 7. Paying special attention to lines marked [low conf] as they likely contain errors
@@ -989,7 +986,6 @@ Context: This is a business phone call for TEMCO, a detergent sales company. Com
 - TEMCO (company name)
 - All-purpose detergent
 - Aluminum-specific detergent
-- QuickBooks (accounting software)
 - Invoice, billing, sales, support
 
 Return ONLY the corrected transcript in the same format (Speaker: text), one line per segment. Do not add explanations."""
@@ -1110,7 +1106,7 @@ def process_conference_recording(call_sid, conference_name):
             'paragraphs': 'true',  # NEW: Group utterances into logical paragraphs
             'profanity_filter': 'false',  # Keep actual words spoken
             # Custom vocabulary for better accuracy
-            'keywords': 'TEMCO:2.0,detergent:2.0,all-purpose:2.0,aluminum-specific:2.0,QuickBooks:2.0,invoice:1.5,sales:1.5,support:1.5,billing:1.5'
+            'keywords': 'TEMCO:2.0,detergent:2.0,all-purpose:2.0,aluminum-specific:2.0,invoice:1.5,sales:1.5,support:1.5,billing:1.5'
         }
 
         headers = {
@@ -1367,55 +1363,6 @@ def send_audio_to_twilio(call_sid, audio_bytes):
         traceback.print_exc()
 
 
-def detect_detergent_order_intent(user_text):
-    """
-    Keyword-based detection for detergent order requests
-    Returns True if user text indicates they want to order detergent
-
-    Args:
-        user_text: The user's spoken text
-
-    Returns:
-        bool: True if detergent order keywords detected
-    """
-    if not user_text:
-        return False
-
-    text_lower = user_text.lower()
-
-    # Detergent order keywords (from config.py prompt)
-    # IMPORTANT: These are checked BEFORE transfer keywords, so be specific
-    detergent_keywords = [
-        'order detergent',
-        'buy detergent',
-        'purchase detergent',
-        'want to order more detergent',
-        'want to buy more detergent',  # Added
-        'want to buy detergent',         # Added
-        'buy more detergent',            # Added
-        'purchase more detergent',       # Added
-        'order more detergent',
-        'order turboklean',
-        'buy turboklean',
-        'need more detergent',
-        'want more detergent',
-        'want to order detergent',
-        'like to order detergent',
-        'like to buy detergent',         # Added
-        'need detergent',
-        'get detergent',
-        'get more detergent',
-    ]
-
-    # Check for detergent order keywords
-    for keyword in detergent_keywords:
-        if keyword in text_lower:
-            print(f"[Detergent Detection] [DETECTED] Keyword match: '{keyword}'")
-            return True
-
-    return False
-
-
 def detect_transfer_intent(user_text):
     """
     Keyword-based fallback detection for transfer requests
@@ -1499,373 +1446,13 @@ async def handle_ai_response(session_id):
         user_text = conv_mgr.get_user_text()
         print(f"\n[AI] Processing user input: '{user_text}'")
 
-        # ==============================================================================
-        # LEGACY: DETERGENT ORDERING WORKFLOW
-        # Status: DISABLED - Preserved for reference
-        # Date Disabled: 2025-11-05
-        # Reason: System converted to call routing (see CALL_ROUTING_TRANSFORMATION_PLAN.md)
-        # ==============================================================================
-
         forced_response = None
         keyword_transfer_detected = False  # Initialize to avoid UnboundLocalError
 
-        if DETERGENT_WORKFLOW_ENABLED:
-            # CRITICAL: Check for detergent order intent BEFORE calling Claude
-            # This bypasses Claude's unreliable prompt following
-            detergent_order_detected = detect_detergent_order_intent(user_text)
-        else:
-            detergent_order_detected = False
-
-        if DETERGENT_WORKFLOW_ENABLED and detergent_order_detected and not conv_mgr.collecting_detergent_info:
-            print(f"[AI] [OVERRIDE] Detergent order detected! Checking caller ID for existing customer...")
-
-            # Get caller's phone number from session
-            caller_phone = session.get('caller_number')
-
-            if caller_phone:
-                # Try QuickBooks lookup using caller ID
-                try:
-                    from quickbooks_client import QuickBooksClient
-                    qb = QuickBooksClient()
-                    existing_customer = qb.search_customer_by_phone(caller_phone)
-
-                    if existing_customer:
-                        # Customer found! Extract all data
-                        customer_data = qb.get_customer_summary(existing_customer)
-                        conv_mgr.detergent_quickbooks_customer = existing_customer
-                        conv_mgr.detergent_customer_name = customer_data['name']
-                        conv_mgr.detergent_customer_phone = customer_data['phone'] or caller_phone
-                        conv_mgr.detergent_customer_email = customer_data['email']
-
-                        # Store address if available
-                        if customer_data['address_street']:
-                            conv_mgr.detergent_address_street = customer_data['address_street']
-                            conv_mgr.detergent_address_city = customer_data['address_city']
-                            conv_mgr.detergent_address_state = customer_data['address_state']
-                            conv_mgr.detergent_address_zip = customer_data['address_zip']
-
-                        conv_mgr.collecting_detergent_info = True
-                        conv_mgr.detergent_awaiting_full_confirmation = True
-
-                        # Generate confirmation message with all data
-                        confirmation_parts = [f"I can help! I have {customer_data['name']} on file"]
-
-                        if customer_data['address_street']:
-                            confirmation_parts.append(f"at {customer_data['address_street']}, {customer_data['address_city']}, {customer_data['address_state']} {customer_data['address_zip']}")
-
-                        if customer_data['email']:
-                            confirmation_parts.append(f"email {customer_data['email']}")
-
-                        confirmation_msg = " ".join(confirmation_parts) + ". Is this all correct? [CONFIRM_CUSTOMER_DATA]"
-
-                        print(f"[AI] [OVERRIDE] Found existing customer: {customer_data['name']}")
-                        print(f"[AI] [OVERRIDE] Confirmation: {confirmation_msg}")
-                        forced_response = confirmation_msg
-                    else:
-                        # Customer not found - proceed with manual collection
-                        print(f"[AI] [OVERRIDE] No customer found for {caller_phone}, collecting manually")
-                        forced_response = "I can help with that. May I have your name please? [COLLECT_DETERGENT_NAME]"
-
-                except Exception as e:
-                    # QuickBooks lookup failed - fall back to manual collection
-                    print(f"[AI] [OVERRIDE] QuickBooks lookup error: {e}, collecting manually")
-                    forced_response = "I can help with that. May I have your name please? [COLLECT_DETERGENT_NAME]"
-            else:
-                # No caller ID available - fall back to manual collection
-                print(f"[AI] [OVERRIDE] No caller ID available, collecting manually")
-                forced_response = "I can help with that. May I have your name please? [COLLECT_DETERGENT_NAME]"
-
-        # State-based forcing: If we're in the middle of collecting detergent info,
-        # force the correct next prompt based on what we've collected so far
-        # COLLECT PIECE BY PIECE: name → phone → street → city → state → ZIP → payment → quantity
-        elif conv_mgr.detergent_awaiting_full_confirmation:
-            # User is confirming or denying all their information from QuickBooks
-            print(f"[AI] [OVERRIDE] State: Full customer data confirmation received")
-            user_response = user_text.lower().strip()
-
-            # Check for affirmative responses
-            affirmative_keywords = ['yes', 'yeah', 'yep', 'correct', 'right', 'that\'s right', 'perfect', 'good', 'fine', 'ok', 'okay']
-            negative_keywords = ['no', 'nope', 'wrong', 'incorrect', 'not', 'different', 'change', 'update']
-
-            is_affirmative = any(keyword in user_response for keyword in affirmative_keywords)
-            is_negative = any(keyword in user_response for keyword in negative_keywords)
-
-            if is_affirmative and not is_negative:
-                # User confirmed all data - skip to payment method!
-                print(f"[AI] [OVERRIDE] Customer data confirmed, skipping to payment")
-                conv_mgr.detergent_awaiting_full_confirmation = False
-                forced_response = "Perfect. How would you like to pay? We accept credit card, check, or we can invoice you. [COLLECT_DETERGENT_PAYMENT]"
-
-            elif is_negative:
-                # User needs to update something
-                print(f"[AI] [OVERRIDE] Customer needs to update information")
-                conv_mgr.detergent_awaiting_full_confirmation = False
-                conv_mgr.detergent_needs_qb_update = True
-                forced_response = "No problem. What would you like to update? Your name, address, or email? [COLLECT_CORRECTION]"
-
-            else:
-                # Unclear response - ask again
-                print(f"[AI] [OVERRIDE] Unclear confirmation response, asking again")
-                forced_response = "I didn't catch that. Is the information I have on file still correct? [CONFIRM_CUSTOMER_DATA]"
-
-        elif conv_mgr.detergent_needs_qb_update:
-            # User said data is wrong, determine what needs updating
-            print(f"[AI] [OVERRIDE] State: Collecting correction information")
-            user_response = user_text.lower().strip()
-
-            # Determine what they want to update
-            if 'name' in user_response:
-                print(f"[AI] [OVERRIDE] User wants to update name")
-                conv_mgr.detergent_customer_name = None  # Clear to trigger collection
-                conv_mgr.detergent_needs_qb_update = False  # Will be set to True again when storing updates
-                forced_response = "What name should I use for this order? [COLLECT_DETERGENT_NAME]"
-                conv_mgr.detergent_qb_updates['name'] = True
-
-            elif 'address' in user_response:
-                print(f"[AI] [OVERRIDE] User wants to update address")
-                # Clear address fields
-                conv_mgr.detergent_address_street = None
-                conv_mgr.detergent_address_city = None
-                conv_mgr.detergent_address_state = None
-                conv_mgr.detergent_address_zip = None
-                conv_mgr.detergent_needs_qb_update = False  # Will be set to True again when storing updates
-                forced_response = "What's the street address? [COLLECT_DETERGENT_ADDRESS]"
-                conv_mgr.detergent_qb_updates['address'] = True
-
-            elif 'email' in user_response:
-                print(f"[AI] [OVERRIDE] User wants to update email")
-                conv_mgr.detergent_needs_qb_update = False  # Will be set to True again when storing updates
-                conv_mgr.detergent_collecting_email = True
-                forced_response = "What's your email address? [COLLECT_DETERGENT_EMAIL]"
-                conv_mgr.detergent_qb_updates['email'] = True
-
-            else:
-                # Default: assume address (most common correction)
-                print(f"[AI] [OVERRIDE] Unclear what to update, defaulting to address")
-                conv_mgr.detergent_address_street = None
-                conv_mgr.detergent_address_city = None
-                conv_mgr.detergent_address_state = None
-                conv_mgr.detergent_address_zip = None
-                conv_mgr.detergent_needs_qb_update = False  # Will be set to True again when storing updates
-                forced_response = "What's your current street address? [COLLECT_DETERGENT_ADDRESS]"
-                conv_mgr.detergent_qb_updates['address'] = True
-
-        elif DETERGENT_WORKFLOW_ENABLED and conv_mgr.collecting_detergent_info:
-            if not conv_mgr.detergent_customer_name:
-                # User just provided their name, store it and ask for phone
-                print(f"[AI] [OVERRIDE] State: Name provided, asking for phone")
-                # Take only the first sentence to avoid duplicates from Deepgram
-                name = user_text.strip().split('.')[0].strip()
-                conv_mgr.set_detergent_customer_name(name)
-                print(f"[AI] [OVERRIDE] Stored name: {name}")
-                # Increase pause threshold and disable barge-in for digit-by-digit phone number entry
-                conv_mgr.set_pause_threshold_for_structured_data()
-                forced_response = f"Thank you {name}. What's the best phone number to reach you? [COLLECT_DETERGENT_PHONE]"
-            elif not conv_mgr.detergent_customer_phone:
-                # User is providing phone number - convert text to digits and validate
-                print(f"[AI] [OVERRIDE] State: Phone provided, validating...")
-                phone_number = convert_phone_text_to_digits(user_text.strip())
-
-                if phone_number:
-                    # We have a complete 10-digit phone number
-                    conv_mgr.set_detergent_customer_phone(phone_number)
-                    print(f"[AI] [OVERRIDE] Stored phone: {phone_number}")
-
-                    # Restore default pause threshold (phone collection complete)
-                    conv_mgr.restore_default_pause_threshold()
-
-                    # NEW: Check if customer exists in QuickBooks
-                    try:
-                        from quickbooks_client import QuickBooksClient
-                        qb = QuickBooksClient()
-                        existing_customer = qb.search_customer_by_phone(phone_number)
-
-                        if existing_customer and existing_customer.BillAddr:
-                            # Customer found with address - ask for confirmation
-                            print(f"[AI] [OVERRIDE] Found existing customer: {existing_customer.DisplayName}")
-                            addr = existing_customer.BillAddr
-
-                            # Store the address for later use
-                            stored_address = {
-                                'street': addr.Line1 if addr.Line1 else '',
-                                'city': addr.City if addr.City else '',
-                                'state': addr.CountrySubDivisionCode if addr.CountrySubDivisionCode else '',
-                                'zip': addr.PostalCode if addr.PostalCode else ''
-                            }
-                            conv_mgr.detergent_stored_address = stored_address
-                            conv_mgr.detergent_awaiting_address_confirmation = True
-
-                            print(f"[AI] [OVERRIDE] Stored address: {stored_address['street']}, {stored_address['city']}, {stored_address['state']} {stored_address['zip']}")
-
-                            # Ask for confirmation
-                            forced_response = f"Great! I have you on file at {stored_address['street']}, {stored_address['city']}, {stored_address['state']} {stored_address['zip']}. Is this address still correct? [CONFIRM_DETERGENT_ADDRESS]"
-                        else:
-                            # Customer not found or no address - collect normally
-                            print(f"[AI] [OVERRIDE] No existing customer found or no stored address")
-                            forced_response = "Great. What's the street address? [COLLECT_DETERGENT_ADDRESS]"
-
-                    except Exception as e:
-                        # QuickBooks search failed - fall back to normal collection
-                        print(f"[AI] [OVERRIDE] QuickBooks search error: {e}")
-                        print(f"[AI] [OVERRIDE] Falling back to normal address collection")
-                        forced_response = "Great. What's the street address? [COLLECT_DETERGENT_ADDRESS]"
-                else:
-                    # Not enough digits - ask them to repeat
-                    print(f"[AI] [OVERRIDE] Phone incomplete, asking to repeat")
-                    forced_response = "I didn't catch all of that. Could you give me the full phone number with area code? [COLLECT_DETERGENT_PHONE]"
-            elif conv_mgr.detergent_awaiting_address_confirmation:
-                # User is confirming or denying the stored address
-                print(f"[AI] [OVERRIDE] State: Address confirmation received")
-                user_response = user_text.lower().strip()
-
-                # Check for affirmative responses
-                affirmative_keywords = ['yes', 'yeah', 'yep', 'correct', 'right', 'that\'s right', 'perfect', 'good', 'fine', 'ok', 'okay']
-                negative_keywords = ['no', 'nope', 'wrong', 'incorrect', 'not', 'different', 'change', 'update']
-
-                is_affirmative = any(keyword in user_response for keyword in affirmative_keywords)
-                is_negative = any(keyword in user_response for keyword in negative_keywords)
-
-                if is_affirmative and not is_negative:
-                    # User confirmed - use stored address
-                    print(f"[AI] [OVERRIDE] Address confirmed, using stored address")
-                    addr = conv_mgr.detergent_stored_address
-                    conv_mgr.detergent_address_street = addr['street']
-                    conv_mgr.detergent_address_city = addr['city']
-                    conv_mgr.detergent_address_state = addr['state']
-                    conv_mgr.detergent_address_zip = addr['zip']
-                    conv_mgr.detergent_awaiting_address_confirmation = False
-                    print(f"[AI] [OVERRIDE] Using address: {addr['street']}, {addr['city']}, {addr['state']} {addr['zip']}")
-
-                    # Skip to payment method
-                    forced_response = "Perfect. How would you like to pay? We accept credit card, check, or we can invoice you. [COLLECT_DETERGENT_PAYMENT]"
-                elif is_negative:
-                    # User denied - collect new address
-                    print(f"[AI] [OVERRIDE] Address denied, collecting new address")
-                    conv_mgr.detergent_awaiting_address_confirmation = False
-                    conv_mgr.detergent_stored_address = None
-                    forced_response = "No problem. What's the street address? [COLLECT_DETERGENT_ADDRESS]"
-                else:
-                    # Unclear response - ask again
-                    print(f"[AI] [OVERRIDE] Unclear confirmation response, asking again")
-                    forced_response = "I didn't catch that. Is the address I mentioned still correct? [CONFIRM_DETERGENT_ADDRESS]"
-            elif not conv_mgr.detergent_address_street:
-                # User is providing street address
-                print(f"[AI] [OVERRIDE] State: Street provided, asking for city")
-                street = user_text.strip().split('.')[0].strip()
-                conv_mgr.detergent_address_street = street
-                print(f"[AI] [OVERRIDE] Stored street: {street}")
-                forced_response = "Got it. What city? [COLLECT_DETERGENT_ADDRESS]"
-            elif not conv_mgr.detergent_address_city:
-                # User is providing city
-                print(f"[AI] [OVERRIDE] State: City provided, asking for state")
-                city = user_text.strip().split('.')[0].strip()
-                conv_mgr.detergent_address_city = city
-                print(f"[AI] [OVERRIDE] Stored city: {city}")
-                forced_response = "And the state? [COLLECT_DETERGENT_ADDRESS]"
-            elif not conv_mgr.detergent_address_state:
-                # User is providing state
-                print(f"[AI] [OVERRIDE] State: State provided, validating...")
-                state_text = user_text.strip().split('.')[0].strip()
-                # Try to parse state (could be "Oklahoma" or "OK")
-                state_names = {
-                    'oklahoma': 'OK', 'texas': 'TX', 'california': 'CA', 'kansas': 'KS',
-                    'missouri': 'MO', 'arkansas': 'AR', 'new mexico': 'NM', 'colorado': 'CO',
-                    'alabama': 'AL', 'alaska': 'AK', 'arizona': 'AZ', 'illinois': 'IL',
-                    'indiana': 'IN', 'iowa': 'IA', 'florida': 'FL', 'georgia': 'GA'
-                }
-                state_lower = state_text.lower()
-
-                # Validation: Check if it's a valid state
-                state = None
-                if len(state_text) == 2 and state_text.isalpha():
-                    # Two-letter code (e.g., "OK")
-                    state = state_text.upper()
-                elif state_lower in state_names:
-                    # Full state name (e.g., "Oklahoma")
-                    state = state_names[state_lower]
-                else:
-                    # Invalid state - common mistakes: numbers (like "Two"), gibberish
-                    print(f"[AI] [OVERRIDE] Invalid state '{state_text}', asking to repeat")
-                    forced_response = "I didn't catch that. What state is the address in? [COLLECT_DETERGENT_ADDRESS]"
-
-                if state:
-                    conv_mgr.detergent_address_state = state
-                    print(f"[AI] [OVERRIDE] Stored state: {state}")
-                    # Increase pause threshold and disable barge-in for digit-by-digit ZIP code entry
-                    conv_mgr.set_pause_threshold_for_structured_data()
-                    forced_response = "And the ZIP code? [COLLECT_DETERGENT_ADDRESS]"
-            elif not conv_mgr.detergent_address_zip:
-                # User is providing ZIP code
-                print(f"[AI] [OVERRIDE] State: ZIP provided, validating...")
-                zip_text = user_text.strip().split('.')[0].strip()  # Take first sentence
-                # Extract 5 digits from text (could be "seven three one zero eight" or "73108")
-                import re
-                # First try to find existing digits
-                zip_match = re.search(r'\b(\d{5})\b', zip_text)
-                if zip_match:
-                    zip_code = zip_match.group(1)
-                else:
-                    # Try to convert text to digits using the phone converter
-                    # Pad the input to satisfy the 10-digit requirement
-                    padded_text = zip_text + " zero zero zero zero zero"
-                    temp_result = convert_phone_text_to_digits(padded_text)
-                    if temp_result and len(temp_result) >= 5:
-                        zip_code = temp_result[:5]
-                    else:
-                        # If conversion failed, ask them to repeat
-                        print(f"[AI] [OVERRIDE] ZIP incomplete, asking to repeat")
-                        forced_response = "I didn't catch that. Could you give me the ZIP code again? [COLLECT_DETERGENT_ADDRESS]"
-                        zip_code = None
-
-                if zip_code:
-                    conv_mgr.detergent_address_zip = zip_code
-                    print(f"[AI] [OVERRIDE] Stored ZIP: {zip_code}")
-                    # Restore default pause threshold (ZIP collection complete)
-                    conv_mgr.restore_default_pause_threshold()
-                    forced_response = "Perfect. How would you like to pay? We accept credit card, check, or we can invoice you. [COLLECT_DETERGENT_PAYMENT]"
-            elif conv_mgr.detergent_collecting_email:
-                # User is providing email address
-                print(f"[AI] [OVERRIDE] State: Email provided")
-                email = user_text.strip().split('.')[0].strip()  # Take first sentence
-                conv_mgr.detergent_customer_email = email
-                conv_mgr.detergent_collecting_email = False
-                print(f"[AI] [OVERRIDE] Stored email: {email}")
-                forced_response = "Perfect. How would you like to pay? We accept credit card, check, or we can invoice you. [COLLECT_DETERGENT_PAYMENT]"
-            elif not conv_mgr.detergent_payment_method:
-                # User is providing payment method - confirm and ask for quantity
-                print(f"[AI] [OVERRIDE] State: Payment provided, confirming details and asking for quantity")
-                payment = user_text.strip().split('.')[0].strip()  # Take first sentence
-                conv_mgr.set_detergent_payment(payment)
-                print(f"[AI] [OVERRIDE] Stored payment: {payment}")
-                # Create confirmation message
-                forced_response = f"Great! Let me confirm: {conv_mgr.detergent_customer_name} at {conv_mgr.detergent_address_street}, {conv_mgr.detergent_address_city}, {conv_mgr.detergent_address_state} {conv_mgr.detergent_address_zip}, paying by {payment}. How many units would you like to order? [COLLECT_DETERGENT_QUANTITY]"
-            elif conv_mgr.detergent_quantity is None:
-                # User is providing quantity - parse and create invoice
-                print(f"[AI] [OVERRIDE] State: Quantity provided, completing order")
-                # Extract number from text
-                import re
-                # Try to find a number
-                number_match = re.search(r'\b(\d+)\b', user_text)
-                if number_match:
-                    quantity = int(number_match.group(1))
-                else:
-                    # Try text numbers
-                    text_numbers = {'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
-                                   'six': 6, 'seven': 7, 'eight': 8, 'nine': 9, 'ten': 10}
-                    words = user_text.lower().split()
-                    quantity = 1  # Default to 1
-                    for word in words:
-                        if word in text_numbers:
-                            quantity = text_numbers[word]
-                            break
-                conv_mgr.set_detergent_quantity(quantity)
-                print(f"[AI] [OVERRIDE] Stored quantity: {quantity}")
-                forced_response = f"Order submitted. Is there anything else I can help you with today? [DETERGENT_ORDER_COMPLETE]"
-
         # ==============================================================================
-        # NEW: CALL ROUTING WORKFLOW
+        # CALL ROUTING WORKFLOW
         # ==============================================================================
-        if not DETERGENT_WORKFLOW_ENABLED and not conv_mgr.routing_decision_made and not forced_response:
+        if not conv_mgr.routing_decision_made and not forced_response:
             print(f"[Routing] Analyzing caller intent...")
 
             from routing_engine import routing_engine
@@ -1908,7 +1495,7 @@ async def handle_ai_response(session_id):
                 # Initiate transfer (will be called after AI speaks)
                 forced_response = f"Perfect! Connecting you to {decision.department} now. [TRANSFER_TO_DEPARTMENT]"
 
-        elif not DETERGENT_WORKFLOW_ENABLED and conv_mgr.awaiting_routing_confirmation and not forced_response:
+        elif conv_mgr.awaiting_routing_confirmation and not forced_response:
             # User responding to confirmation question
             print(f"[Routing] Processing confirmation response")
             user_response = user_text.lower()
@@ -1947,203 +1534,16 @@ async def handle_ai_response(session_id):
             ai_text = await claude.get_response(user_text)
             print(f"[AI] Claude responded: '{ai_text}'\n")
 
-        # Check for detergent order markers
-        collect_name = '[COLLECT_DETERGENT_NAME]' in ai_text
-        collect_phone = '[COLLECT_DETERGENT_PHONE]' in ai_text
-        collect_address = '[COLLECT_DETERGENT_ADDRESS]' in ai_text
-        collect_payment = '[COLLECT_DETERGENT_PAYMENT]' in ai_text
-        detergent_complete = '[DETERGENT_ORDER_COMPLETE]' in ai_text
-
-        # Handle detergent order flow
-        # NOTE: State-based forcing already stores data, so these are fallbacks for Claude-generated markers
-        if collect_name:
-            print(f"[AI] 🧴 Starting detergent order - collecting name")
-            conv_mgr.start_collecting_detergent_info()
-
-        elif collect_phone:
-            # Only store name if not already stored (fallback for Claude-generated markers)
-            if not conv_mgr.detergent_customer_name:
-                print(f"[AI] 🧴 Collecting phone number (storing name from previous response)")
-                conv_mgr.set_detergent_customer_name(user_text.strip())
-            else:
-                print(f"[AI] 🧴 Collecting phone number (name already stored)")
-
-        elif collect_address:
-            # Only store phone if not already stored (fallback for Claude-generated markers)
-            if not conv_mgr.detergent_customer_phone:
-                print(f"[AI] 🧴 Collecting shipping address (storing phone from previous response)")
-                conv_mgr.set_detergent_customer_phone(user_text.strip())
-            else:
-                print(f"[AI] 🧴 Collecting shipping address (phone already stored)")
-
-        elif collect_payment:
-            # Only store address if not already stored (fallback for Claude-generated markers)
-            if not conv_mgr.detergent_address_street:
-                print(f"[AI] 🧴 Collecting payment method (storing address from previous response)")
-                parsed_address = parse_address(user_text.strip())
-                conv_mgr.set_detergent_address(
-                    street=parsed_address['street'],
-                    city=parsed_address['city'],
-                    state=parsed_address['state'],
-                    zip_code=parsed_address['zip']
-                )
-                print(f"[AI] 🧴 Address: {parsed_address['street']}, {parsed_address['city']}, {parsed_address['state']} {parsed_address['zip']}")
-            else:
-                print(f"[AI] 🧴 Collecting payment method (address already stored)")
-
-        elif detergent_complete:
-            # Only store payment if not already stored (fallback for Claude-generated markers)
-            if not conv_mgr.detergent_payment_method:
-                print(f"[AI] 🧴 Detergent order complete (storing payment from previous response)")
-                payment_method = user_text.strip()
-                conv_mgr.set_detergent_payment(payment_method)
-            else:
-                print(f"[AI] 🧴 Detergent order complete (payment already stored)")
-
-            # Get complete order data
-            order_data = conv_mgr.get_full_detergent_order()
-            print(f"[AI] 🧴 Complete Order:")
-            print(f"     Name: {order_data['name']}")
-            print(f"     Phone: {order_data['phone']}")
-            if order_data.get('email'):
-                print(f"     Email: {order_data['email']}")
-            print(f"     Address: {order_data['address_street']}, {order_data['address_city']}, {order_data['address_state']} {order_data['address_zip']}")
-            print(f"     Payment: {order_data['payment_method']}")
-
-            # Save to database
-            try:
-                from database import create_order
-                order_id = create_order(order_data)
-                print(f"[AI] 🧴 Saved to database: Order ID {order_id}")
-            except Exception as e:
-                print(f"[AI] 🧴 ❌ Database save failed: {e}")
-                order_id = None
-
-            # Sync to QuickBooks (if database save succeeded)
-            if order_id:
-                try:
-                    from quickbooks_client import QuickBooksClient
-                    qb = QuickBooksClient()
-
-                    # Create/update customer
-                    qb_customer_id = qb.get_or_create_customer(
-                        name=order_data['name'],
-                        phone=order_data['phone'],
-                        address={
-                            'street': order_data['address_street'],
-                            'city': order_data['address_city'],
-                            'state': order_data['address_state'],
-                            'zip': order_data['address_zip']
-                        }
-                    )
-
-                    # Create invoice with user-specified quantity
-                    invoice = qb.create_invoice(
-                        customer_id=qb_customer_id,
-                        product_name=Config.DETERGENT_PRODUCT_NAME,
-                        quantity=order_data['quantity'],
-                        payment_method=order_data['payment_method']
-                    )
-
-                    # Update database
-                    from database import update_sync_status
-                    update_sync_status(
-                        order_id=order_id,
-                        status='synced',
-                        qb_data={
-                            'customer_id': qb_customer_id,
-                            'invoice_id': invoice.Id,
-                            'invoice_number': invoice.DocNumber
-                        },
-                        error=None
-                    )
-
-                    print(f"[AI] 🧴 ✅ Synced to QuickBooks - Invoice #{invoice.DocNumber}")
-
-                    # NEW: Update customer record if corrections were provided
-                    if conv_mgr.detergent_needs_qb_update and conv_mgr.detergent_qb_updates:
-                        try:
-                            qb_customer_id_for_update = conv_mgr.detergent_quickbooks_customer.Id if conv_mgr.detergent_quickbooks_customer else qb_customer_id
-
-                            # Build updates dict
-                            updates = {}
-
-                            if 'name' in conv_mgr.detergent_qb_updates and conv_mgr.detergent_customer_name:
-                                updates['name'] = conv_mgr.detergent_customer_name
-
-                            if 'email' in conv_mgr.detergent_qb_updates and conv_mgr.detergent_customer_email:
-                                updates['email'] = conv_mgr.detergent_customer_email
-
-                            if 'address' in conv_mgr.detergent_qb_updates:
-                                updates['address_street'] = conv_mgr.detergent_address_street
-                                updates['address_city'] = conv_mgr.detergent_address_city
-                                updates['address_state'] = conv_mgr.detergent_address_state
-                                updates['address_zip'] = conv_mgr.detergent_address_zip
-
-                            if updates:
-                                print(f"[AI] 🧴 Updating QuickBooks customer record with corrections...")
-                                success = qb.update_customer(qb_customer_id_for_update, updates)
-                                if success:
-                                    print(f"[AI] 🧴 ✅ Customer record updated in QuickBooks")
-                                else:
-                                    print(f"[AI] 🧴 ⚠️ Customer record update failed (non-critical)")
-                        except Exception as e:
-                            print(f"[AI] 🧴 ⚠️ Failed to update customer record: {e} (non-critical)")
-
-                except Exception as e:
-                    print(f"[AI] 🧴 ❌ QuickBooks sync failed: {e}")
-                    import traceback
-                    traceback.print_exc()
-
-                    # Update database with failure
-                    try:
-                        from database import update_sync_status
-                        update_sync_status(order_id=order_id, status='failed', qb_data=None, error=str(e))
-                    except:
-                        pass
-
-            # CRITICAL FIX: Clear detergent state so agent can handle follow-up questions
-            # User can now ask about other products, request transfer, etc.
-            print(f"[AI] 🧴 Clearing detergent collection state - ready for follow-up questions")
-            conv_mgr.clear_detergent_info()
-
-            # CRITICAL FIX: Add order confirmation to Claude's history so it knows the order was placed
-            # This allows Claude to correctly answer follow-up questions like "is my order confirmed?"
-            order_summary = (
-                f"Order confirmed for {order_data['name']}: {order_data.get('quantity', 1)} units of detergent "
-                f"to {order_data['address_city']}, {order_data['address_state']} {order_data['address_zip']}, "
-                f"paying by {order_data['payment_method']}. Invoice has been created in QuickBooks."
-            )
-            # Add this as an internal note in Claude's history (assistant message)
-            # This way Claude knows what just happened
-            claude.conversation_history.append({
-                'role': 'assistant',
-                'content': order_summary
-            })
-            print(f"[AI] [SYNC] Added order confirmation to Claude's history: {order_summary}")
-
         # Check for transfer request from Claude
         transfer_requested_by_claude = '[TRANSFER_TO_SALES]' in ai_text
         transfer_to_department = '[TRANSFER_TO_DEPARTMENT]' in ai_text
 
         # Combine Claude's decision with keyword fallback
-        # Note: Detergent order completion does NOT trigger transfer - order is already saved to QuickBooks
         transfer_requested = transfer_requested_by_claude or keyword_transfer_detected or transfer_to_department
 
         # Remove markers from spoken text
         spoken_text = ai_text.replace('[TRANSFER_TO_SALES]', '').strip()
         spoken_text = spoken_text.replace('[TRANSFER_TO_DEPARTMENT]', '').strip()
-        spoken_text = spoken_text.replace('[COLLECT_DETERGENT_NAME]', '').strip()
-        spoken_text = spoken_text.replace('[COLLECT_DETERGENT_PHONE]', '').strip()
-        spoken_text = spoken_text.replace('[COLLECT_DETERGENT_ADDRESS]', '').strip()
-        spoken_text = spoken_text.replace('[CONFIRM_DETERGENT_ADDRESS]', '').strip()
-        spoken_text = spoken_text.replace('[COLLECT_DETERGENT_PAYMENT]', '').strip()
-        spoken_text = spoken_text.replace('[COLLECT_DETERGENT_QUANTITY]', '').strip()
-        spoken_text = spoken_text.replace('[DETERGENT_ORDER_COMPLETE]', '').strip()
-        # NEW: Remove markers for enhanced customer lookup workflow
-        spoken_text = spoken_text.replace('[CONFIRM_CUSTOMER_DATA]', '').strip()
-        spoken_text = spoken_text.replace('[COLLECT_CORRECTION]', '').strip()
-        spoken_text = spoken_text.replace('[COLLECT_DETERGENT_EMAIL]', '').strip()
 
         # If keyword detected transfer but Claude didn't trigger it, override response
         if keyword_transfer_detected and not transfer_requested_by_claude:
@@ -2281,12 +1681,6 @@ def deepgram_worker(session_id, call_sid):
             print(f"[Predictive] ⚠️ Skipping - agent is handling the call")
             return
 
-        # CRITICAL: Disable predictive responses during detergent workflow
-        # Predictive responses break the strict sequential order required for state-based forced responses
-        if DETERGENT_WORKFLOW_ENABLED and conv_mgr.collecting_detergent_info:
-            print(f"[Predictive] ⚠️ Skipping - detergent workflow in progress (requires strict order)")
-            return
-
         # Cancel any existing predictive response
         if predictive_response_data['task'] and not predictive_response_data['task'].done():
             predictive_response_data['task'].cancel()
@@ -2302,15 +1696,11 @@ def deepgram_worker(session_id, call_sid):
                 ai_text = await claude.get_response(interim_text)
                 print(f"[Predictive] Claude ready: '{ai_text[:50]}...'")
 
-                # Check for transfer and detergent markers
+                # Check for transfer markers
                 transfer_requested = '[TRANSFER_TO_SALES]' in ai_text
-                detergent_complete = '[DETERGENT_ORDER_COMPLETE]' in ai_text
 
                 # Remove all markers from spoken text
                 spoken_text = ai_text.replace('[TRANSFER_TO_SALES]', '').strip()
-                spoken_text = spoken_text.replace('[COLLECT_DETERGENT_NAME]', '').strip()
-                spoken_text = spoken_text.replace('[COLLECT_DETERGENT_PHONE]', '').strip()
-                spoken_text = spoken_text.replace('[DETERGENT_ORDER_COMPLETE]', '').strip()
 
                 # Generate audio
                 audio_bytes = await tts.text_to_speech(spoken_text)
@@ -2319,7 +1709,7 @@ def deepgram_worker(session_id, call_sid):
                     predictive_response_data['result'] = {
                         'audio': audio_bytes,
                         'text': spoken_text,
-                        'transfer': transfer_requested or detergent_complete,
+                        'transfer': transfer_requested,
                         'interim_text': interim_text
                     }
                     print(f"[Predictive] ✅ Response ready in advance!")
@@ -2569,192 +1959,6 @@ def deepgram_worker(session_id, call_sid):
     loop.close()
 
 
-@app.route("/qb-connect")
-def qb_connect():
-    """Initiate QuickBooks OAuth flow"""
-    try:
-        from intuitlib.client import AuthClient
-        from intuitlib.enums import Scopes
-
-        auth_client = AuthClient(
-            client_id=Config.QUICKBOOKS_CLIENT_ID,
-            client_secret=Config.QUICKBOOKS_CLIENT_SECRET,
-            redirect_uri=Config.QUICKBOOKS_REDIRECT_URI,
-            environment=Config.QUICKBOOKS_ENVIRONMENT
-        )
-
-        auth_url = auth_client.get_authorization_url([Scopes.ACCOUNTING])
-
-        return f'''
-        <html>
-        <head><title>Connect to QuickBooks</title></head>
-        <body style="font-family: Arial; padding: 40px;">
-            <h1>Connect Phone Agent to QuickBooks Online</h1>
-            <p>Click the button below to authorize this app to create customers and invoices in QuickBooks.</p>
-            <p><a href="{auth_url}" style="display: inline-block; padding: 15px 30px; background: #2ca01c; color: white; text-decoration: none; border-radius: 5px; font-size: 16px;">Connect to QuickBooks</a></p>
-            <p style="color: #666; font-size: 14px;">Environment: {Config.QUICKBOOKS_ENVIRONMENT}</p>
-        </body>
-        </html>
-        '''
-    except Exception as e:
-        return f'''
-        <html>
-        <body style="font-family: Arial; padding: 40px;">
-            <h1>Error</h1>
-            <p style="color: red;">Failed to initiate QuickBooks connection: {str(e)}</p>
-            <p>Make sure QUICKBOOKS_CLIENT_ID and QUICKBOOKS_CLIENT_SECRET are set in .env</p>
-        </body>
-        </html>
-        ''', 500
-
-
-@app.route("/qb-callback")
-def qb_callback():
-    """Handle QuickBooks OAuth callback"""
-    try:
-        from intuitlib.client import AuthClient
-        import os
-
-        auth_code = request.args.get('code')
-        realm_id = request.args.get('realmId')
-        error = request.args.get('error')
-
-        if error:
-            return f'''
-            <html>
-            <body style="font-family: Arial; padding: 40px;">
-                <h1>Authorization Failed</h1>
-                <p style="color: red;">Error: {error}</p>
-                <p><a href="/qb-connect">Try again</a></p>
-            </body>
-            </html>
-            ''', 400
-
-        if not auth_code:
-            return "Error: No authorization code received", 400
-
-        auth_client = AuthClient(
-            client_id=Config.QUICKBOOKS_CLIENT_ID,
-            client_secret=Config.QUICKBOOKS_CLIENT_SECRET,
-            redirect_uri=Config.QUICKBOOKS_REDIRECT_URI,
-            environment=Config.QUICKBOOKS_ENVIRONMENT
-        )
-
-        # Exchange code for tokens
-        auth_client.get_bearer_token(auth_code, realm_id=realm_id)
-        refresh_token = auth_client.refresh_token
-
-        # Save to .env file
-        env_path = os.path.join(os.path.dirname(__file__), '.env')
-
-        # Read existing .env
-        with open(env_path, 'r') as f:
-            lines = f.readlines()
-
-        # Update QUICKBOOKS_REALM_ID and QUICKBOOKS_REFRESH_TOKEN
-        realm_found = False
-        token_found = False
-
-        with open(env_path, 'w') as f:
-            for line in lines:
-                if line.startswith('QUICKBOOKS_REALM_ID='):
-                    f.write(f'QUICKBOOKS_REALM_ID={realm_id}\n')
-                    realm_found = True
-                elif line.startswith('QUICKBOOKS_REFRESH_TOKEN='):
-                    f.write(f'QUICKBOOKS_REFRESH_TOKEN={refresh_token}\n')
-                    token_found = True
-                else:
-                    f.write(line)
-
-            # Add if not found
-            if not realm_found:
-                f.write(f'\nQUICKBOOKS_REALM_ID={realm_id}\n')
-            if not token_found:
-                f.write(f'QUICKBOOKS_REFRESH_TOKEN={refresh_token}\n')
-
-        return f'''
-        <html>
-        <body style="font-family: Arial; padding: 40px;">
-            <h1 style="color: #2ca01c;">QuickBooks Connected Successfully!</h1>
-            <p>Your phone agent is now connected to QuickBooks Online.</p>
-            <p><strong>Realm ID:</strong> {realm_id}</p>
-            <p><strong>Environment:</strong> {Config.QUICKBOOKS_ENVIRONMENT}</p>
-            <hr>
-            <p><strong>Next Steps:</strong></p>
-            <ol>
-                <li>Restart your phone agent server to load new credentials</li>
-                <li>Test the connection at <a href="/qb-status">/qb-status</a></li>
-                <li>Make sure DETERGENT_PRODUCT_NAME in .env matches your QuickBooks product name</li>
-            </ol>
-            <p style="color: #666; font-size: 14px; margin-top: 40px;">
-                Credentials saved to .env file. Keep this file secure.
-            </p>
-        </body>
-        </html>
-        '''
-
-    except Exception as e:
-        import traceback
-        return f'''
-        <html>
-        <body style="font-family: Arial; padding: 40px;">
-            <h1>Error Completing OAuth</h1>
-            <p style="color: red;">{str(e)}</p>
-            <pre style="background: #f5f5f5; padding: 10px; overflow-x: auto;">{traceback.format_exc()}</pre>
-            <p><a href="/qb-connect">Try again</a></p>
-        </body>
-        </html>
-        ''', 500
-
-
-@app.route("/qb-status")
-def qb_status():
-    """Check QuickBooks connection status"""
-    try:
-        if not Config.QUICKBOOKS_REFRESH_TOKEN:
-            return '''
-            <html>
-            <body style="font-family: Arial; padding: 40px;">
-                <h1>QuickBooks Not Connected</h1>
-                <p>Your phone agent is not connected to QuickBooks Online.</p>
-                <p><a href="/qb-connect" style="display: inline-block; padding: 15px 30px; background: #2ca01c; color: white; text-decoration: none; border-radius: 5px;">Connect Now</a></p>
-            </body>
-            </html>
-            '''
-
-        # Try to get company info to verify connection
-        from quickbooks_client import QuickBooksClient
-        qb = QuickBooksClient()
-        company_name = qb.get_company_info()
-
-        return f'''
-        <html>
-        <body style="font-family: Arial; padding: 40px;">
-            <h1 style="color: #2ca01c;">QuickBooks Connected ✅</h1>
-            <p><strong>Company:</strong> {company_name}</p>
-            <p><strong>Realm ID:</strong> {Config.QUICKBOOKS_REALM_ID}</p>
-            <p><strong>Environment:</strong> {Config.QUICKBOOKS_ENVIRONMENT}</p>
-            <p><strong>Product Name:</strong> {Config.DETERGENT_PRODUCT_NAME}</p>
-            <hr>
-            <p><a href="/orders">View Orders</a> | <a href="/qb-connect">Reconnect</a></p>
-        </body>
-        </html>
-        '''
-
-    except Exception as e:
-        import traceback
-        return f'''
-        <html>
-        <body style="font-family: Arial; padding: 40px;">
-            <h1>QuickBooks Connection Error ❌</h1>
-            <p style="color: red;">Error: {str(e)}</p>
-            <pre style="background: #f5f5f5; padding: 10px; overflow-x: auto;">{traceback.format_exc()}</pre>
-            <p><a href="/qb-connect">Reconnect</a></p>
-        </body>
-        </html>
-        ''', 500
-
-
 @app.route("/orders")
 def orders_dashboard():
     """View recent orders and sync status"""
@@ -2783,7 +1987,6 @@ def orders_dashboard():
         <body>
             <h1>Detergent Orders</h1>
             <div class="nav">
-                <a href="/qb-status">QuickBooks Status</a> |
                 <a href="/orders">Refresh</a>
             </div>
         '''

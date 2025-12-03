@@ -24,9 +24,6 @@ class ConversationState(Enum):
     TRANSFERRING = "transferring"              # Dialing agent into conference
     HUMAN_CONVERSATION = "human_conversation"  # Human agent handling call
 
-    # Legacy states (kept for detergent workflow - currently disabled)
-    COLLECTING_CUSTOMER_INFO = "collecting_customer_info"
-
 
 class ConversationManager:
     """Manages conversation flow, pause detection, and state"""
@@ -54,27 +51,6 @@ class ConversationManager:
 
         # Conversation history for Claude
         self.conversation_history = []
-
-        # Detergent order tracking
-        self.collecting_detergent_info = False
-        self.detergent_customer_name = None
-        self.detergent_customer_phone = None
-        self.detergent_address_street = None
-        self.detergent_address_city = None
-        self.detergent_address_state = None
-        self.detergent_address_zip = None
-        self.detergent_payment_method = None
-        self.detergent_quantity = None  # Number of units to order
-        self.detergent_awaiting_address_confirmation = False  # Waiting for user to confirm stored address
-        self.detergent_stored_address = None  # Stored address from QuickBooks for confirmation
-
-        # NEW FIELDS for enhanced QuickBooks customer lookup
-        self.detergent_quickbooks_customer = None      # Full Customer object from QB
-        self.detergent_customer_email = None           # Email from QuickBooks
-        self.detergent_awaiting_full_confirmation = False  # Waiting for "yes/no" on all data
-        self.detergent_needs_qb_update = False         # Flag if customer provided corrections
-        self.detergent_qb_updates = {}                 # Dict of fields to update in QB
-        self.detergent_collecting_email = False        # Flag when collecting email update
 
         # Conference/routing fields
         self.agent_joined_at = None  # Timestamp when human agent joined conference
@@ -336,109 +312,8 @@ class ConversationManager:
         """Restore pause threshold to default value and re-enable barge-in detection"""
         self.pause_threshold = self.default_pause_threshold
         self.ignore_barge_in = False
-        print(f"[ConversationManager] ⏱️ Pause threshold restored to {self.default_pause_threshold}s")
-        print(f"[ConversationManager] 🔊 Barge-in detection re-enabled")
-
-    def start_collecting_detergent_info(self):
-        """Mark that we're starting to collect detergent customer info"""
-        self.collecting_detergent_info = True
-        self.detergent_customer_name = None
-        self.detergent_customer_phone = None
-        print(f"[ConversationManager] Started collecting detergent order info")
-
-    def set_detergent_customer_name(self, name: str):
-        """Store customer name for detergent order"""
-        self.detergent_customer_name = name
-        print(f"[ConversationManager] Customer name: {name}")
-
-    def set_detergent_customer_phone(self, phone: str):
-        """Store customer phone for detergent order"""
-        self.detergent_customer_phone = phone
-        print(f"[ConversationManager] Customer phone: {phone}")
-
-    def has_complete_detergent_info(self) -> bool:
-        """Check if we have all required detergent order info"""
-        return (self.collecting_detergent_info and
-                self.detergent_customer_name is not None and
-                self.detergent_customer_phone is not None)
-
-    def get_detergent_order_info(self) -> dict:
-        """Get collected detergent order information"""
-        return {
-            'name': self.detergent_customer_name,
-            'phone': self.detergent_customer_phone,
-            'call_sid': self.call_sid
-        }
-
-    def set_detergent_address(self, street: str, city: str, state: str, zip_code: str):
-        """Store shipping address for detergent order"""
-        self.detergent_address_street = street
-        self.detergent_address_city = city
-        self.detergent_address_state = state
-        self.detergent_address_zip = zip_code
-        print(f"[ConversationManager] Address: {street}, {city}, {state} {zip_code}")
-
-    def set_detergent_payment(self, payment_method: str):
-        """Store payment method for detergent order"""
-        self.detergent_payment_method = payment_method
-        print(f"[ConversationManager] Payment method: {payment_method}")
-
-    def set_detergent_quantity(self, quantity: int):
-        """Store quantity for detergent order"""
-        self.detergent_quantity = quantity
-        print(f"[ConversationManager] Quantity: {quantity}")
-
-    def get_full_detergent_order(self) -> dict:
-        """Get complete detergent order information including address, payment, and quantity"""
-        return {
-            'name': self.detergent_customer_name,
-            'phone': self.detergent_customer_phone,
-            'email': self.detergent_customer_email,
-            'address_street': self.detergent_address_street,
-            'address_city': self.detergent_address_city,
-            'address_state': self.detergent_address_state,
-            'address_zip': self.detergent_address_zip,
-            'payment_method': self.detergent_payment_method,
-            'quantity': self.detergent_quantity,
-            'call_sid': self.call_sid
-        }
-
-    def is_detergent_order_complete(self) -> bool:
-        """Check if all required detergent order information is collected"""
-        return all([
-            self.detergent_customer_name,
-            self.detergent_customer_phone,
-            self.detergent_address_street,
-            self.detergent_address_city,
-            self.detergent_address_state,
-            self.detergent_address_zip,
-            self.detergent_payment_method,
-            self.detergent_quantity is not None
-        ])
-
-    def clear_detergent_info(self):
-        """Clear detergent order info"""
-        self.collecting_detergent_info = False
-        self.detergent_customer_name = None
-        self.detergent_customer_phone = None
-        self.detergent_address_street = None
-        self.detergent_address_city = None
-        self.detergent_address_state = None
-        self.detergent_address_zip = None
-        self.detergent_payment_method = None
-        self.detergent_quantity = None
-        self.detergent_awaiting_address_confirmation = False
-        self.detergent_stored_address = None
-        # Clear new QuickBooks customer lookup fields
-        self.detergent_quickbooks_customer = None
-        self.detergent_customer_email = None
-        self.detergent_awaiting_full_confirmation = False
-        self.detergent_needs_qb_update = False
-        self.detergent_qb_updates = {}
-        self.detergent_collecting_email = False
-        # Restore default pause threshold in case we were in the middle of structured data collection
-        self.restore_default_pause_threshold()
-        print(f"[ConversationManager] Cleared detergent order info")
+        print(f"[ConversationManager] Pause threshold restored to {self.default_pause_threshold}s")
+        print(f"[ConversationManager] Barge-in detection re-enabled")
 
     def mark_agent_joined(self, stop_transcription_callback=None):
         """

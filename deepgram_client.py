@@ -42,8 +42,7 @@ class DeepgramClient:
                 'profanity_filter': False,  # Keep actual words spoken
                 # Custom vocabulary for domain-specific terms
                 'keywords': [
-                    'TEMCO', 'detergent', 'all-purpose', 'aluminum-specific',
-                    'QuickBooks', 'invoice', 'sales', 'support', 'billing'
+                    'TEMCO', 'sales', 'support', 'billing'
                 ],
                 'keywords_boost': 2.0  # Prefer these words when ambiguous
             }

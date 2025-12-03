@@ -12,6 +12,8 @@ Phone Agent is an AI-powered telephony system that handles incoming calls throug
 
 The architecture emphasizes real-time processing, low-latency responses, and continuous transcription throughout the call lifecycle, even during agent transfers.
 
+**Note:** QuickBooks integration and detergent ordering workflow were removed in December 2025 as part of codebase cleanup.
+
 ---
 
 ## System Architecture
@@ -28,8 +30,6 @@ The architecture emphasizes real-time processing, low-latency responses, and con
                [Conference Bridge + Agent Transfer]
                            ↓
                     [PostgreSQL Database]
-                           ↓
-                [QuickBooks Online] (for detergent orders)
 ```
 
 ### Technology Stack
@@ -43,7 +43,6 @@ The architecture emphasizes real-time processing, low-latency responses, and con
 | **AI Agent** | Anthropic Claude | claude-3-haiku | Conversational AI |
 | **Text-to-Speech** | ElevenLabs | eleven_turbo_v2_5 | Voice synthesis |
 | **Database** | PostgreSQL + SQLAlchemy | Latest | Data persistence |
-| **ERP Integration** | QuickBooks Online | OAuth 2.0 | Order/customer management |
 | **Language** | Python | 3.x | Core application |
 
 ---
@@ -124,7 +123,6 @@ Twilio → "stop" event → Close connections, save transcript
 - Structured data collection: Adjustable pause thresholds for phone numbers/addresses
 
 **Configuration Constants:**
-- `DETERGENT_WORKFLOW_ENABLED = False` (Feature flag for order collection)
 - Audio queue: 100 items max, non-blocking
 - Temp directory: `temp_audio/` for streaming audio files
 
@@ -180,15 +178,12 @@ INTERIM_STABILITY_THRESHOLD = 3  # Matching interims to trigger
 **Database & Integrations:**
 ```python
 DATABASE_URL  # PostgreSQL connection string
-QUICKBOOKS_CLIENT_ID/SECRET  # OAuth credentials
-QUICKBOOKS_REALM_ID  # Company ID
 SALES_FORWARD_NUMBER  # Agent transfer number
 ```
 
 **Critical System Prompt:** The Claude system prompt is extensive (~100 lines) and includes:
 - Response speed requirements (1-2 sentences max)
 - Call transfer capability markers (`[TRANSFER_TO_SALES]`)
-- Detergent order workflow markers (`[COLLECT_DETERGENT_NAME]`, etc.)
 - Knowledge base integration from external file
 
 ---
@@ -261,7 +256,7 @@ call_manager = CallManager()  # Singleton used throughout app
   - Punctuation enabled
   - Smart formatting (numbers, dates, times)
   - Filler word detection (um, uh)
-  - Custom keywords: TEMCO, detergent, QuickBooks (2.0x boost)
+  - Custom keywords: TEMCO (2.0x boost)
 
 **Callback Architecture:**
 ```python
@@ -314,9 +309,6 @@ class ConversationState(Enum):
     CONFIRMING_ROUTE = "confirming_route"
     TRANSFERRING = "transferring"
     HUMAN_CONVERSATION = "human_conversation"
-
-    # Legacy (detergent workflow - disabled)
-    COLLECTING_CUSTOMER_INFO = "collecting_customer_info"
 ```
 
 **Core Algorithms:**
@@ -378,12 +370,6 @@ on_user_finished = callback  # Called when pause detected
 on_barge_in = callback  # Called when user interrupts AI
 on_predictive_trigger = callback  # Called for early response generation
 ```
-
-**Detergent Order Fields** (Legacy - currently disabled):
-- Name, phone, email, address (street/city/state/zip)
-- Payment method, quantity
-- QuickBooks customer lookup data
-- Address confirmation flags
 
 ---
 
@@ -626,33 +612,7 @@ The conference bridge architecture allows the WebSocket media stream to remain a
 
 **Database Models:**
 
-**1. DetergentOrder (Legacy - detergent workflow disabled)**
-```python
-class DetergentOrder(Base):
-    id: Integer (PK)
-    call_sid: String(100)
-    customer_name: String(200)
-    customer_phone: String(50)
-    customer_email: String(200)
-    address_street: String(300)
-    address_city: String(100)
-    address_state: String(50)
-    address_zip: String(10)
-    payment_method: String(100)
-    quantity: Integer
-
-    # QuickBooks sync
-    qb_customer_id: String(50)
-    qb_invoice_id: String(50)
-    qb_invoice_number: String(50)
-    sync_status: String(20)  # 'pending', 'synced', 'failed'
-    sync_error: Text
-
-    created_at: DateTime
-    synced_at: DateTime
-```
-
-**2. Department**
+**1. Department**
 ```python
 class Department(Base):
     id: Integer (PK)
@@ -665,7 +625,7 @@ class Department(Base):
     updated_at: DateTime
 ```
 
-**3. RoutingRule**
+**2. RoutingRule**
 ```python
 class RoutingRule(Base):
     id: Integer (PK)
@@ -679,7 +639,7 @@ class RoutingRule(Base):
     updated_at: DateTime
 ```
 
-**4. CallRoute**
+**3. CallRoute**
 ```python
 class CallRoute(Base):
     id: Integer (PK)
@@ -698,7 +658,7 @@ class CallRoute(Base):
     created_at: DateTime
 ```
 
-**5. CallTranscript**
+**4. CallTranscript**
 ```python
 class CallTranscript(Base):
     id: Integer (PK)
@@ -712,7 +672,7 @@ class CallTranscript(Base):
     transcription_type: String(20)  # 'realtime' or 'batch' (diarized)
 ```
 
-**6. CallMetadata**
+**5. CallMetadata**
 ```python
 class CallMetadata(Base):
     call_sid: String(100) (PK)
@@ -729,11 +689,6 @@ class CallMetadata(Base):
 
 **Key Functions:**
 ```python
-# Detergent orders
-create_order(order_data) → order_id
-update_sync_status(order_id, status, qb_data=None, error=None)
-get_pending_orders() → List[DetergentOrder]
-
 # Call routing
 create_call_route(route_data) → route_id
 update_call_route_end(call_sid, agent_answered_at, call_ended_at, duration)
@@ -764,25 +719,13 @@ finally:
 ### 11. **admin_routes.py** - Web Dashboard (Not detailed in reads, but mentioned)
 
 **Purpose:** Flask Blueprint for admin interface
-- View recent orders
-- Monitor sync status
-- Manual retry for failed syncs
 - Call routing analytics
 - Transcript viewer
+- System monitoring
 
 ---
 
-### 12. **quickbooks_client.py** - ERP Integration (Not detailed in reads, but mentioned)
-
-**Purpose:** QuickBooks Online API integration
-- OAuth 2.0 authentication flow
-- Customer lookup by name/phone
-- Invoice generation for detergent orders
-- Token refresh management
-
----
-
-### 13. **websocket_handler.py** - Alternative WebSocket Implementation
+### 12. **websocket_handler.py** - Alternative WebSocket Implementation
 
 **Location:** `websocket_handler.py`
 **Lines of Code:** 174
@@ -959,12 +902,6 @@ INTERIM_STABILITY_THRESHOLD=3
 # Call Routing
 SALES_FORWARD_NUMBER=+18166741783
 
-# QuickBooks (if using detergent workflow)
-QUICKBOOKS_CLIENT_ID=xxxx
-QUICKBOOKS_CLIENT_SECRET=xxxx
-QUICKBOOKS_REALM_ID=xxxx
-QUICKBOOKS_REFRESH_TOKEN=xxxx
-
 # Admin Dashboard
 ADMIN_PASSWORD=changeme123
 ADMIN_ENABLED=true
@@ -1079,25 +1016,20 @@ def index():
 
 ### Current Limitations
 
-1. **Detergent Workflow Disabled**
-   - Feature flag: `DETERGENT_WORKFLOW_ENABLED = False`
-   - Code remains but inactive (see lines 49-52 in app.py)
-   - Database tables still exist
-
-2. **AI Routing Not Implemented**
+1. **AI Routing Not Implemented**
    - Routing engine has placeholder for AI analysis (Phase 3)
    - Currently relies on keyword matching only
    - Lines 49-53 in `routing_engine.py` commented out
 
-3. **Single Conference per Call**
+2. **Single Conference per Call**
    - No support for call parking or multiple transfers
    - Conference name tied to call_sid (1:1 mapping)
 
-4. **No WebRTC Support**
+3. **No WebRTC Support**
    - Relies entirely on Twilio telephony network
    - Cannot handle browser-based calls directly
 
-5. **Python 3.14 Compatibility**
+4. **Python 3.14 Compatibility**
    - pydub may fail on Python 3.14 (audioop module removed)
    - Warning logged but doesn't crash
 
@@ -1252,14 +1184,14 @@ def index():
 ### C. Database Schema Diagram
 
 ```
-┌─────────────────┐       ┌──────────────┐
-│ DetergentOrder  │       │ Department   │
-├─────────────────┤       ├──────────────┤
-│ id (PK)         │       │ id (PK)      │
-│ call_sid        │       │ name         │
-│ customer_name   │       │ phone_number │
-│ sync_status     │       │ active       │
-└─────────────────┘       └──────────────┘
+                          ┌──────────────┐
+                          │ Department   │
+                          ├──────────────┤
+                          │ id (PK)      │
+                          │ name         │
+                          │ phone_number │
+                          │ active       │
+                          └──────────────┘
                                   │
                                   │ FK
                                   ▼

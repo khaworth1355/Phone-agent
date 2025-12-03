@@ -10,7 +10,8 @@
       "Bash(python:*)",
       "Bash(git checkout:*)",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(del verify.py)"
     ],
     "deny": [],
     "ask": []

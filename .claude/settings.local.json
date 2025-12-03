@@ -6,7 +6,12 @@
       "Bash(dir:*)",
       "Bash(C:/Users/khawo/PycharmProjects/Phone-agent/.venv/Scripts/pip.exe install:*)",
       "Bash(.venv/Scripts/python.exe -m pip:*)",
-      "Bash(choco install:*)"
+      "Bash(choco install:*)",
+      "Bash(python:*)",
+      "Bash(git checkout:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(del verify.py)"
     ],
     "deny": [],
     "ask": []

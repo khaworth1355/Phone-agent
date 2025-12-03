@@ -28,3 +28,7 @@ pydub==0.25.1
 # Windows: choco install ffmpeg
 # Mac: brew install ffmpeg
 # Linux: sudo apt-get install ffmpeg
+
+# Database (PostgreSQL)
+sqlalchemy==2.0.23
+psycopg2-binary==2.9.9

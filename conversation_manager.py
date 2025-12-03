@@ -15,7 +15,14 @@ class ConversationState(Enum):
     WAITING_FOR_PAUSE = "waiting_for_pause"
     AI_THINKING = "ai_thinking"
     AI_SPEAKING = "ai_speaking"
-    COLLECTING_CUSTOMER_INFO = "collecting_customer_info"
+
+    # Routing workflow states
+    GREETING = "greeting"                      # Playing initial message
+    ROUTING_QUESTION = "routing_question"      # Asking "How can I help?"
+    ANALYZING_INTENT = "analyzing_intent"      # Processing routing decision
+    CONFIRMING_ROUTE = "confirming_route"      # "I'll connect you to Sales, ok?"
+    TRANSFERRING = "transferring"              # Dialing agent into conference
+    HUMAN_CONVERSATION = "human_conversation"  # Human agent handling call
 
 
 class ConversationManager:
@@ -45,10 +52,17 @@ class ConversationManager:
         # Conversation history for Claude
         self.conversation_history = []
 
-        # Detergent order tracking
-        self.collecting_detergent_info = False
-        self.detergent_customer_name = None
-        self.detergent_customer_phone = None
+        # Conference/routing fields
+        self.agent_joined_at = None  # Timestamp when human agent joined conference
+
+        # NEW: Routing workflow fields
+        self.routing_decision_made = False
+        self.routing_department = None
+        self.routing_confidence = None
+        self.routing_method = None  # 'ai', 'keyword', 'menu'
+        self.routing_reason = None  # Why this department was chosen
+        self.awaiting_routing_confirmation = False
+        self.routing_department_id = None
 
         # Callbacks
         self.on_user_finished = None  # Callback when user finishes speaking
@@ -57,8 +71,10 @@ class ConversationManager:
 
         # Settings
         self.pause_threshold = Config.PAUSE_THRESHOLD
+        self.default_pause_threshold = Config.PAUSE_THRESHOLD  # Store default for restoration
         self.predictive_enabled = Config.PREDICTIVE_RESPONSES
         self.interim_stability_threshold = Config.INTERIM_STABILITY_THRESHOLD
+        self.ignore_barge_in = False  # Flag to ignore barge-in during structured data collection
 
         print(f"[ConversationManager] Initialized for call {call_sid}")
         print(f"[ConversationManager] Pause threshold: {self.pause_threshold}s")
@@ -79,13 +95,19 @@ class ConversationManager:
         # Update last speech time
         self.last_speech_time = current_time
 
-        # Handle barge-in
+        # Handle barge-in (unless we're ignoring it for structured data collection)
         if self.state == ConversationState.AI_SPEAKING:
-            print(f"\n[ConversationManager] 🔴 BARGE-IN DETECTED!")
-            print(f"[ConversationManager] User interrupted AI: '{text}'\n")
-            self._trigger_barge_in()
-            self.state = ConversationState.USER_SPEAKING
-            self.current_user_text = ""  # Reset buffer
+            if self.ignore_barge_in:
+                # During structured data collection, treat as continuation instead of interruption
+                print(f"[ConversationManager] User continuing (barge-in ignored for structured data): '{text}'")
+                self.state = ConversationState.USER_SPEAKING
+                # Don't reset buffer - keep accumulated text
+            else:
+                print(f"\n[ConversationManager] 🔴 BARGE-IN DETECTED!")
+                print(f"[ConversationManager] User interrupted AI: '{text}'\n")
+                self._trigger_barge_in()
+                self.state = ConversationState.USER_SPEAKING
+                self.current_user_text = ""  # Reset buffer
 
         # Update state if needed
         if self.state == ConversationState.IDLE:
@@ -95,7 +117,14 @@ class ConversationManager:
         if is_final:
             # Final transcript
             self.last_final_time = current_time
-            self.current_user_text += " " + text if self.current_user_text else text
+
+            # CRITICAL FIX: Deepgram sometimes sends duplicate final transcripts
+            # Check if this exact text is already at the end of accumulated text
+            if not self.current_user_text.endswith(text):
+                self.current_user_text += " " + text if self.current_user_text else text
+            else:
+                print(f"[ConversationManager] Skipping duplicate final transcript")
+
             self.interim_buffer = ""
 
             print(f"[ConversationManager] Final: '{text}'")
@@ -266,40 +295,40 @@ class ConversationManager:
         self.last_final_time = None
         print(f"[ConversationManager] Reset")
 
-    def start_collecting_detergent_info(self):
-        """Mark that we're starting to collect detergent customer info"""
-        self.collecting_detergent_info = True
-        self.detergent_customer_name = None
-        self.detergent_customer_phone = None
-        print(f"[ConversationManager] Started collecting detergent order info")
+    def set_pause_threshold_for_structured_data(self, threshold: float = 2.5):
+        """
+        Increase pause threshold for structured data collection (phone, address, etc.)
+        Also disables barge-in detection to allow users to continue after AI asks clarifying questions
 
-    def set_detergent_customer_name(self, name: str):
-        """Store customer name for detergent order"""
-        self.detergent_customer_name = name
-        print(f"[ConversationManager] Customer name: {name}")
+        Args:
+            threshold: Pause threshold in seconds (default: 2.5s for digit-by-digit speech)
+        """
+        self.pause_threshold = threshold
+        self.ignore_barge_in = True
+        print(f"[ConversationManager] ⏱️ Pause threshold increased to {threshold}s for structured data collection")
+        print(f"[ConversationManager] 🔇 Barge-in detection disabled (allowing continuation)")
 
-    def set_detergent_customer_phone(self, phone: str):
-        """Store customer phone for detergent order"""
-        self.detergent_customer_phone = phone
-        print(f"[ConversationManager] Customer phone: {phone}")
+    def restore_default_pause_threshold(self):
+        """Restore pause threshold to default value and re-enable barge-in detection"""
+        self.pause_threshold = self.default_pause_threshold
+        self.ignore_barge_in = False
+        print(f"[ConversationManager] Pause threshold restored to {self.default_pause_threshold}s")
+        print(f"[ConversationManager] Barge-in detection re-enabled")
 
-    def has_complete_detergent_info(self) -> bool:
-        """Check if we have all required detergent order info"""
-        return (self.collecting_detergent_info and
-                self.detergent_customer_name is not None and
-                self.detergent_customer_phone is not None)
+    def mark_agent_joined(self, stop_transcription_callback=None):
+        """
+        Mark that a human agent has joined the conference
+        Called when agent connects to enable proper speaker identification
 
-    def get_detergent_order_info(self) -> dict:
-        """Get collected detergent order information"""
-        return {
-            'name': self.detergent_customer_name,
-            'phone': self.detergent_customer_phone,
-            'call_sid': self.call_sid
-        }
+        Args:
+            stop_transcription_callback: Optional callback to stop real-time transcription
+        """
+        from datetime import datetime
+        self.agent_joined_at = datetime.utcnow()
+        self.state = ConversationState.HUMAN_CONVERSATION
+        print(f"[ConversationManager] Agent joined conference, state: HUMAN_CONVERSATION")
 
-    def clear_detergent_info(self):
-        """Clear detergent order info"""
-        self.collecting_detergent_info = False
-        self.detergent_customer_name = None
-        self.detergent_customer_phone = None
-        print(f"[ConversationManager] Cleared detergent order info")
+        # Stop real-time transcription - we'll use post-call batch processing instead
+        if stop_transcription_callback:
+            print(f"[ConversationManager] Stopping real-time transcription...")
+            stop_transcription_callback()

@@ -11,17 +11,20 @@ import os
 import uuid
 from queue import Queue, Empty
 
-from flask import Flask, request, send_file
+from flask import Flask, request, send_file, jsonify
 from flask_sock import Sock
-from twilio.twiml.voice_response import VoiceResponse, Start, Connect, Play
+from twilio.twiml.voice_response import VoiceResponse, Start, Connect, Play, Dial
 from twilio.rest import Client as TwilioClient
 
 from config import Config
 from call_manager import call_manager
+from conference_manager import conference_manager
 from deepgram_client import DeepgramClient
 from conversation_manager import ConversationManager, ConversationState
 from claude_client import ClaudeAgent
 from elevenlabs_client import ElevenLabsClient
+from routing_engine import routing_engine
+from admin_routes import admin_bp
 
 # Ensure real-time console output
 sys.stdout.reconfigure(line_buffering=True) if hasattr(sys.stdout, 'reconfigure') else None
@@ -30,6 +33,10 @@ sys.stdout.reconfigure(line_buffering=True) if hasattr(sys.stdout, 'reconfigure'
 app = Flask(__name__)
 sock = Sock(app)
 
+# Register admin blueprint
+app.register_blueprint(admin_bp)
+print("[App] Admin dashboard registered at /admin")
+
 # Initialize Twilio client
 twilio_client = TwilioClient(Config.TWILIO_ACCOUNT_SID, Config.TWILIO_AUTH_TOKEN)
 
@@ -37,12 +44,19 @@ twilio_client = TwilioClient(Config.TWILIO_ACCOUNT_SID, Config.TWILIO_AUTH_TOKEN
 TEMP_AUDIO_DIR = os.path.join(os.path.dirname(__file__), 'temp_audio')
 os.makedirs(TEMP_AUDIO_DIR, exist_ok=True)
 
+# ==============================================================================
+# FEATURE FLAGS
+# ==============================================================================
+# (No feature flags currently active)
+# ==============================================================================
+
 # Store active sessions
 sessions = {}
 
 # Store conversation state per call (persists across reconnections)
 call_conversations = {}  # call_sid -> ConversationManager
 call_ai_speaking_until = {}  # call_sid -> timestamp when AI will stop speaking
+call_phone_numbers = {}  # call_sid -> caller phone number (E.164 format)
 
 # Cached responses for common questions (populated at startup)
 cached_responses = {}
@@ -172,25 +186,173 @@ def generate_cached_responses():
                         f.write(audio_bytes)
 
                     success_count += 1
-                    print(f"[Cache] ✅ Cached: {key} ({len(audio_bytes)} bytes)")
+                    print(f"[Cache] [OK] Cached: {key} ({len(audio_bytes)} bytes)")
                 else:
-                    print(f"[Cache] ⚠️  Failed: {key} (no audio returned)")
+                    print(f"[Cache] [WARNING] Failed: {key} (no audio returned)")
 
             except Exception as e:
-                print(f"[Cache] ❌ Error caching {key}: {e}")
+                print(f"[Cache] [ERROR] Error caching {key}: {e}")
                 import traceback
                 traceback.print_exc()
 
         loop.close()
 
-        print(f"[Cache] ✅ Successfully cached {success_count}/{len(common_qa)} responses\n")
+        print(f"[Cache] [OK] Successfully cached {success_count}/{len(common_qa)} responses\n")
         return success_count > 0
 
     except Exception as e:
-        print(f"[Cache] ❌ Error generating cached responses: {e}")
+        print(f"[Cache] [ERROR] Error generating cached responses: {e}")
         import traceback
         traceback.print_exc()
         return False
+
+
+def convert_phone_text_to_digits(phone_text):
+    """
+    Convert spoken phone number text to digits
+
+    Args:
+        phone_text: Phone number as spoken text (e.g., "five five five one two three four five six seven")
+
+    Returns:
+        10-digit phone number string, or None if not enough digits
+    """
+    import re
+
+    # Mapping of text numbers to digits
+    text_to_digit = {
+        'zero': '0', 'oh': '0', 'o': '0',
+        'one': '1', 'won': '1',
+        'two': '2', 'to': '2', 'too': '2',
+        'three': '3', 'tree': '3',
+        'four': '4', 'for': '4',
+        'five': '5',
+        'six': '6', 'sics': '6',
+        'seven': '7',
+        'eight': '8', 'ate': '8',
+        'nine': '9', 'niner': '9'
+    }
+
+    print(f"[Phone Parser] Converting: '{phone_text}'")
+
+    # IMPORTANT: Deepgram sends duplicates! Take only first sentence to avoid counting repeats
+    first_sentence = phone_text.split('.')[0].strip()
+    print(f"[Phone Parser] Using first sentence only: '{first_sentence}'")
+
+    # Convert to lowercase and split into words
+    words = first_sentence.lower().split()
+
+    # Extract digits
+    digits = []
+
+    for word in words:
+        # Remove punctuation
+        word = word.strip('.,!?')
+
+        # Check if it's already a digit
+        if word.isdigit():
+            digits.extend(list(word))
+        # Check if it's a text number
+        elif word in text_to_digit:
+            digits.append(text_to_digit[word])
+
+    # Join all digits
+    phone_number = ''.join(digits)
+
+    print(f"[Phone Parser] Extracted digits: '{phone_number}' ({len(phone_number)} digits)")
+
+    # Need exactly 10 digits (area code + number)
+    if len(phone_number) == 10:
+        # Exactly 10 digits - perfect!
+        print(f"[Phone Parser] ✓ Result: {phone_number}")
+        return phone_number
+    elif len(phone_number) < 10:
+        print(f"[Phone Parser] ✗ Not enough digits (need 10, got {len(phone_number)})")
+        return None
+    else:
+        # More than 10 - might be repeats or mistakes, don't guess
+        print(f"[Phone Parser] ✗ Too many digits (need 10, got {len(phone_number)})")
+        return None
+
+
+def parse_address(address_text):
+    """
+    Parse address from natural language into components
+
+    Args:
+        address_text: Address string from user
+
+    Returns:
+        Dict with keys: street, city, state, zip
+    """
+    import re
+
+    print(f"[Address Parser] Parsing: '{address_text}'")
+
+    # Try to extract zip code (5 digits, possibly with dash and 4 more)
+    zip_match = re.search(r'\b(\d{5})(?:-\d{4})?\b', address_text)
+    zip_code = zip_match.group(1) if zip_match else ''
+
+    # Try to extract state (2 letter code - uppercase)
+    state_match = re.search(r'\b([A-Z]{2})\b', address_text.upper())
+    state = state_match.group(1) if state_match else ''
+
+    # If no 2-letter state found, try common state names
+    if not state:
+        state_names = {
+            'oklahoma': 'OK', 'texas': 'TX', 'california': 'CA', 'kansas': 'KS',
+            'missouri': 'MO', 'arkansas': 'AR', 'new mexico': 'NM', 'colorado': 'CO'
+        }
+        text_lower = address_text.lower()
+        for full_name, abbrev in state_names.items():
+            if full_name in text_lower:
+                state = abbrev
+                break
+
+    # Remove zip and state from text to isolate street and city
+    remaining = address_text
+    if zip_code:
+        remaining = remaining.replace(zip_code, '')
+    if state:
+        # Remove state abbreviation
+        remaining = re.sub(r'\b' + state + r'\b', '', remaining, flags=re.IGNORECASE)
+
+    # Clean up punctuation and extra spaces
+    remaining = remaining.replace(',', ' ').strip()
+    remaining = re.sub(r'\s+', ' ', remaining)
+
+    # Split remaining text - usually: street, city
+    # Common patterns: "123 Main St Oklahoma City" or "123 Main Street OKC"
+    parts = remaining.split()
+
+    # Heuristic: city is usually 1-2 words at the end, street is the rest
+    if len(parts) >= 3:
+        # Assume last 1-2 words are city
+        if len(parts) >= 4:
+            street = ' '.join(parts[:-2])
+            city = ' '.join(parts[-2:])
+        else:
+            street = ' '.join(parts[:-1])
+            city = parts[-1]
+    elif len(parts) == 2:
+        street = parts[0]
+        city = parts[1]
+    elif len(parts) == 1:
+        street = parts[0]
+        city = ''
+    else:
+        street = ''
+        city = ''
+
+    result = {
+        'street': street.strip(),
+        'city': city.strip(),
+        'state': state,
+        'zip': zip_code
+    }
+
+    print(f"[Address Parser] Result: {result}")
+    return result
 
 
 def check_cached_response(user_text):
@@ -287,6 +449,24 @@ def home():
     return "Phone Agent Running!", 200
 
 
+@app.route("/status")
+def status():
+    """System status and active conferences"""
+    stats = conference_manager.get_stats()
+    active_conferences = conference_manager.list_active_conferences()
+
+    return jsonify({
+        'status': 'running',
+        'conferences': {
+            'active': stats['total_conferences'],
+            'with_agents': stats['conferences_with_agents'],
+            'waiting': stats['conferences_waiting'],
+            'conference_names': active_conferences
+        },
+        'base_url': Config.BASE_URL
+    })
+
+
 @app.route("/audio/<filename>")
 def serve_audio(filename):
     """Serve temporary audio files"""
@@ -315,6 +495,15 @@ def voice():
     print(f"From: {caller}")
     print("="*80 + "\n")
 
+    # Normalize phone number: remove + prefix AND country code (1) to match format used when customer speaks their phone
+    # Twilio sends: +18166741783, User speaks: 8166741783
+    if caller:
+        normalized_phone = caller.lstrip('+')  # Remove +
+        if normalized_phone.startswith('1') and len(normalized_phone) == 11:
+            normalized_phone = normalized_phone[1:]  # Remove leading 1 (US country code)
+        call_phone_numbers[call_sid] = normalized_phone
+        print(f"[Voice] Stored caller phone: {caller} -> normalized: {normalized_phone}")
+
     # Create call record
     call_manager.create_call(call_sid, caller)
 
@@ -335,16 +524,21 @@ def voice():
     # Add brief pause after greeting to let Deepgram reset
     response.pause(length=0.5)
 
-    # Start media stream with inbound audio only (prevents AI echo)
+    # Start media stream - capture inbound audio only (caller's voice) initially
+    # We'll switch to both_tracks later when agent joins
     start = Start()
     stream = start.stream(url=Config.WEBSOCKET_URL)
-    # Only capture inbound audio (caller's voice) to prevent echo of AI responses
     stream.parameter(name='track', value='inbound_track')
     response.append(start)
 
-    # Keep call open for conversation (10 minutes max)
+    # Keep call alive for conversation (10 minutes)
+    # AI will respond via TwiML updates
     response.pause(length=600)
+
+    # If call reaches this point (10 min timeout), say goodbye
     response.say("Thank you for calling. Goodbye!", voice='Polly.Joanna')
+
+    print(f"[Voice] Call setup complete - AI will handle conversation")
 
     return str(response), 200, {'Content-Type': 'text/xml'}
 
@@ -398,6 +592,13 @@ def media(ws):
                 print(f"[Stream Start] Call: {call_sid}")
                 print(f"[Stream Start] Stream: {stream_sid}")
 
+                # Get caller phone number from stored data
+                caller_phone = call_phone_numbers.get(call_sid)
+                if caller_phone:
+                    print(f"[Stream Start] Caller phone: {caller_phone}")
+                else:
+                    print(f"[Stream Start] Warning: No caller phone found for call {call_sid}")
+
                 # Reuse existing conversation manager if available (preserves history across reconnections)
                 if call_sid in call_conversations:
                     print(f"[Stream Start] ✅ Reusing existing conversation state")
@@ -424,6 +625,7 @@ def media(ws):
                     'conversation_manager': conv_mgr,
                     'claude_agent': claude,
                     'elevenlabs_client': ElevenLabsClient(),
+                    'caller_number': caller_phone,
                 }
 
                 # Start Deepgram worker
@@ -479,6 +681,11 @@ def media(ws):
                 except KeyError:
                     pass  # Already cleaned up
 
+                # Clean up caller phone number
+                if session_call_sid in call_phone_numbers:
+                    del call_phone_numbers[session_call_sid]
+                    print(f"[WebSocket] Cleaned up caller phone for call {session_call_sid}")
+
                 # Clean up conversation state (preserves history for potential reconnects within ~30s)
                 # We keep these for a bit longer in case of quick reconnects
                 # In production, you'd want a more sophisticated cleanup strategy
@@ -517,6 +724,516 @@ def transfer_call(call_sid, phone_number, announcement_text="Transferring you no
         import traceback
         traceback.print_exc()
         return False
+
+
+@app.route('/dial-agent', methods=['POST'])
+def dial_agent():
+    """
+    Transfer caller to conference with human agent
+    Called after routing decision is made
+
+    POST body: {
+        "call_sid": "CA123...",
+        "department": "Sales",
+        "agent_phone": "+18166741783"
+    }
+    """
+    from datetime import datetime
+
+    try:
+        data = request.json
+        call_sid = data.get('call_sid')
+        agent_phone = data.get('agent_phone')
+        department = data.get('department', 'Agent')
+
+        if not call_sid or not agent_phone:
+            return jsonify({'error': 'call_sid and agent_phone required'}), 400
+
+        conference_name = f"call-room-{call_sid}"
+
+        print(f"\n[DialAgent] Creating conference and transferring call")
+        print(f"[DialAgent] Call SID: {call_sid}")
+        print(f"[DialAgent] Department: {department}")
+        print(f"[DialAgent] Agent phone: {agent_phone}")
+
+        # Get caller phone for conference tracking
+        caller_phone = call_phone_numbers.get(call_sid, 'Unknown')
+
+        # Create conference room
+        conference_manager.create_conference(call_sid, caller_phone)
+        print(f"[DialAgent] Created conference: {conference_name}")
+
+        # STEP 1: Transfer existing caller into the conference
+        caller_twiml = f'''<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say voice="Polly.Joanna">Please hold while I connect you to {department}.</Say>
+    <Start>
+        <Stream url="{Config.WEBSOCKET_URL}">
+            <Parameter name="track" value="both_tracks" />
+        </Stream>
+    </Start>
+    <Dial>
+        <Conference
+            startConferenceOnEnter="true"
+            endConferenceOnExit="true"
+            beep="false"
+            record="record-from-start"
+            recordingChannels="dual"
+            recordingStatusCallback="{Config.BASE_URL}/recording-status"
+            statusCallback="{Config.BASE_URL}/conference-status"
+            statusCallbackEvent="start end join leave">{conference_name}</Conference>
+    </Dial>
+</Response>'''
+
+        twilio_client.calls(call_sid).update(twiml=caller_twiml)
+        print(f"[DialAgent] ✓ Caller joined conference")
+
+        # STEP 2: Dial agent into conference
+        agent_call = twilio_client.calls.create(
+            to=agent_phone,
+            from_=Config.TWILIO_PHONE_NUMBER,
+            twiml=f'''<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Say voice="Polly.Joanna">You are being connected to a caller for {department}.</Say>
+    <Dial>
+        <Conference beep="false">{conference_name}</Conference>
+    </Dial>
+</Response>'''
+        )
+
+        print(f"[DialAgent] ✓ Agent call initiated: {agent_call.sid}")
+
+        return jsonify({
+            'status': 'success',
+            'agent_call_sid': agent_call.sid,
+            'conference': conference_name
+        })
+
+    except Exception as e:
+        print(f"[DialAgent] ❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/recording-status', methods=['POST'])
+def recording_status():
+    """
+    Twilio webhook for recording status updates
+    Called when recording is completed
+    """
+    recording_sid = request.form.get('RecordingSid')
+    recording_url = request.form.get('RecordingUrl')
+    recording_status = request.form.get('RecordingStatus')
+    conference_sid = request.form.get('ConferenceSid')
+
+    print(f"\n[Recording Status] {recording_status}")
+    print(f"[Recording Status] Recording SID: {recording_sid}")
+    print(f"[Recording Status] Recording URL: {recording_url}")
+    print(f"[Recording Status] Conference SID: {conference_sid}")
+
+    # When recording is completed, trigger batch transcription
+    if recording_status == 'completed':
+        # Find conference by name (we need to look it up)
+        # The conference name is in the format call-room-{call_sid}
+        # We'll trigger the batch transcription in the conference-end event instead
+        # For now, just log that recording is ready
+        print(f"[Recording Status] ✓ Recording ready for transcription")
+
+    return ('', 200)
+
+
+@app.route('/conference-status', methods=['POST'])
+def conference_status():
+    """
+    Twilio webhook for conference events
+    Events: conference-start, conference-end, participant-join, participant-leave
+    """
+    event = request.form.get('StatusCallbackEvent')
+    conference_sid = request.form.get('ConferenceSid')
+    call_sid = request.form.get('CallSid')
+    friendly_name = request.form.get('FriendlyName')  # "call-room-{call_sid}"
+    participant_label = request.form.get('ParticipantLabel', '')
+
+    print(f"\n[Conference Event] {event}")
+    print(f"[Conference Event] Conference: {friendly_name}")
+    print(f"[Conference Event] Call SID: {call_sid}")
+
+    if event == 'participant-join':
+        # Track who joined
+        # First participant is caller, second is agent
+        conf_info = conference_manager.get_conference_by_name(friendly_name)
+
+        if conf_info:
+            participant_count = len(conf_info['participants'])
+            role = 'caller' if participant_count == 0 else 'agent'
+
+            conference_manager.add_participant(friendly_name, call_sid, role)
+            print(f"[Conference Event] Participant joined as: {role}")
+
+            # If agent just joined, mark it in conversation manager and stop real-time transcription
+            if role == 'agent' and friendly_name.startswith('call-room-'):
+                original_call_sid = friendly_name.replace('call-room-', '')
+                if original_call_sid in call_conversations:
+                    conv_mgr = call_conversations[original_call_sid]
+
+                    # Define callback to stop all sessions for this call
+                    def stop_transcription():
+                        # Find all sessions for this call and stop them
+                        sessions_to_stop = [sid for sid, sess in sessions.items() if sess.get('call_sid') == original_call_sid]
+                        for sid in sessions_to_stop:
+                            print(f"[Conference Event] Stopping transcription session: {sid}")
+                            sessions[sid]['running'] = False
+
+                    conv_mgr.mark_agent_joined(stop_transcription_callback=stop_transcription)
+                    print(f"[Conference Event] Marked agent joined, stopped real-time transcription")
+
+    elif event == 'conference-end':
+        # Get conference info before cleanup
+        conf_info = conference_manager.get_conference_by_name(friendly_name)
+
+        # Trigger batch transcription if this was a routed call (agent joined)
+        if conf_info and conf_info.get('agent_joined'):
+            original_call_sid = friendly_name.replace('call-room-', '')
+            print(f"[Conference Event] Conference with agent ended, will transcribe recording")
+
+            # Start background task to process recording
+            # Give Twilio a moment to finalize the recording
+            import threading
+            def process_recording_delayed():
+                import time
+                time.sleep(5)  # Wait 5 seconds for recording to be ready
+                process_conference_recording(original_call_sid, friendly_name)
+
+            thread = threading.Thread(target=process_recording_delayed, daemon=True)
+            thread.start()
+
+        # Cleanup conference
+        conference_manager.cleanup_conference(friendly_name)
+        print(f"[Conference Event] Conference ended and cleaned up")
+
+    elif event == 'participant-leave':
+        print(f"[Conference Event] Participant left")
+
+    print()  # Blank line for readability
+
+    return ('', 200)
+
+
+def post_process_transcript_with_claude(call_sid):
+    """
+    Use Claude AI to post-process and correct transcripts for better accuracy
+
+    Args:
+        call_sid: Call SID to process
+
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        from database import get_call_transcripts, create_transcript
+        import anthropic
+
+        # Get batch transcripts for this call
+        print(f"[Claude Post-Process] Fetching batch transcripts for {call_sid}...")
+        session = get_session()
+        from database import CallTranscript
+
+        transcripts = session.query(CallTranscript).filter_by(
+            call_sid=call_sid,
+            transcription_type='batch',
+            is_final=True
+        ).order_by(CallTranscript.segment_number).all()
+
+        session.close()
+
+        if not transcripts:
+            print(f"[Claude Post-Process] No batch transcripts found to process")
+            return False
+
+        if len(transcripts) == 0:
+            return False
+
+        # Build conversation text
+        conversation_lines = []
+        for t in transcripts:
+            speaker_label = "Caller" if t.speaker == 'caller' else "Agent"
+            confidence_marker = f" [low conf]" if t.confidence and t.confidence < 0.85 else ""
+            conversation_lines.append(f"{speaker_label}: {t.text}{confidence_marker}")
+
+        conversation_text = "\n".join(conversation_lines)
+
+        print(f"[Claude Post-Process] Processing {len(transcripts)} segments with Claude...")
+
+        # Use Claude to correct the transcript
+        client = anthropic.Anthropic(api_key=Config.ANTHROPIC_API_KEY)
+
+        correction_prompt = f"""You are a transcript correction assistant. Your job is to improve the accuracy and readability of phone call transcripts.
+
+Original Transcript:
+{conversation_text}
+
+Please correct this transcript by:
+1. Fixing obvious transcription errors (misheard words, typos)
+2. Improving punctuation and capitalization
+3. Formatting numbers, dates, and times consistently
+4. Correcting domain-specific terms (TEMCO, detergent products, etc.)
+5. Keeping the same speaker labels (Caller: / Agent:)
+6. NOT changing the meaning or adding information
+7. Paying special attention to lines marked [low conf] as they likely contain errors
+
+Context: This is a business phone call for TEMCO, a detergent sales company. Common terms include:
+- TEMCO (company name)
+- All-purpose detergent
+- Aluminum-specific detergent
+- Invoice, billing, sales, support
+
+Return ONLY the corrected transcript in the same format (Speaker: text), one line per segment. Do not add explanations."""
+
+        response = client.messages.create(
+            model="claude-3-5-sonnet-20241022",
+            max_tokens=4000,
+            messages=[{
+                "role": "user",
+                "content": correction_prompt
+            }]
+        )
+
+        corrected_text = response.content[0].text.strip()
+
+        # Parse corrected transcript and update database
+        corrected_lines = corrected_text.split('\n')
+        updates_made = 0
+
+        for i, line in enumerate(corrected_lines):
+            if ':' not in line:
+                continue
+
+            parts = line.split(':', 1)
+            if len(parts) != 2:
+                continue
+
+            speaker_label = parts[0].strip().lower()
+            corrected_segment = parts[1].strip()
+
+            # Map back to database speaker format
+            speaker = 'caller' if 'caller' in speaker_label else 'agent'
+
+            # Find corresponding transcript segment (by index)
+            if i < len(transcripts):
+                original = transcripts[i]
+
+                # Only update if there's a meaningful change
+                if original.text.strip() != corrected_segment.strip():
+                    # Update the existing transcript
+                    session = get_session()
+                    transcript_to_update = session.query(CallTranscript).filter_by(
+                        id=original.id
+                    ).first()
+
+                    if transcript_to_update:
+                        old_text = transcript_to_update.text
+                        transcript_to_update.text = corrected_segment
+                        session.commit()
+                        updates_made += 1
+                        print(f"[Claude Post-Process] Updated segment {i+1}:")
+                        print(f"  Before: {old_text}")
+                        print(f"  After:  {corrected_segment}")
+
+                    session.close()
+
+        print(f"[Claude Post-Process] ✅ Updated {updates_made} of {len(transcripts)} segments")
+        return True
+
+    except Exception as e:
+        print(f"[Claude Post-Process] ❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+def process_conference_recording(call_sid, conference_name):
+    """
+    Download conference recording and transcribe with Deepgram diarization
+
+    Args:
+        call_sid: Original call SID
+        conference_name: Conference room name
+    """
+    import requests
+    from datetime import datetime
+
+    try:
+        print(f"\n[Batch Transcription] Processing recording for call {call_sid}")
+
+        # Step 1: Get recordings for this call from Twilio
+        recordings = twilio_client.recordings.list(call_sid=call_sid, limit=10)
+
+        if not recordings:
+            print(f"[Batch Transcription] No recordings found for call {call_sid}")
+            return
+
+        # Get the most recent recording (should be the conference recording)
+        recording = recordings[0]
+        recording_url = f"https://api.twilio.com{recording.uri.replace('.json', '.wav')}"
+
+        print(f"[Batch Transcription] Found recording: {recording.sid}")
+        print(f"[Batch Transcription] Duration: {recording.duration}s")
+        print(f"[Batch Transcription] Downloading from Twilio...")
+
+        # Step 2: Download the recording
+        auth = (Config.TWILIO_ACCOUNT_SID, Config.TWILIO_AUTH_TOKEN)
+        response = requests.get(recording_url, auth=auth, timeout=30)
+
+        if response.status_code != 200:
+            print(f"[Batch Transcription] Failed to download recording: {response.status_code}")
+            return
+
+        audio_data = response.content
+        print(f"[Batch Transcription] Downloaded {len(audio_data)} bytes")
+
+        # Step 3: Send to Deepgram for transcription with enhanced diarization
+        print(f"[Batch Transcription] Sending to Deepgram with enhanced diarization...")
+
+        deepgram_url = "https://api.deepgram.com/v1/listen"
+        params = {
+            'punctuate': 'true',
+            'diarize': 'true',  # Enable speaker diarization
+            'model': 'nova-2-phonecall',  # UPGRADED: Optimized for phone calls
+            'language': 'en-US',
+            'smart_format': 'true',  # NEW: Better formatting of numbers, dates, times
+            'utterances': 'true',  # NEW: Group words into natural speech segments
+            'paragraphs': 'true',  # NEW: Group utterances into logical paragraphs
+            'profanity_filter': 'false',  # Keep actual words spoken
+            # Custom vocabulary for better accuracy
+            'keywords': 'TEMCO:2.0,detergent:2.0,all-purpose:2.0,aluminum-specific:2.0,invoice:1.5,sales:1.5,support:1.5,billing:1.5'
+        }
+
+        headers = {
+            'Authorization': f'Token {Config.DEEPGRAM_API_KEY}',
+            'Content-Type': 'audio/wav'
+        }
+
+        dg_response = requests.post(
+            deepgram_url,
+            params=params,
+            headers=headers,
+            data=audio_data,
+            timeout=60
+        )
+
+        if dg_response.status_code != 200:
+            print(f"[Batch Transcription] Deepgram error: {dg_response.status_code}")
+            print(f"[Batch Transcription] Response: {dg_response.text}")
+            return
+
+        result = dg_response.json()
+        print(f"[Batch Transcription] ✓ Deepgram transcription complete")
+
+        # Step 4: Parse diarized transcript
+        if 'results' not in result or 'channels' not in result['results']:
+            print(f"[Batch Transcription] Unexpected response format")
+            return
+
+        channel = result['results']['channels'][0]
+        alternatives = channel.get('alternatives', [])
+
+        if not alternatives:
+            print(f"[Batch Transcription] No transcript alternatives found")
+            return
+
+        words = alternatives[0].get('words', [])
+
+        if not words:
+            print(f"[Batch Transcription] No words with speaker info found")
+            return
+
+        # Step 5: Group words by speaker and create transcript entries with confidence filtering
+        print(f"[Batch Transcription] Processing {len(words)} words with confidence filtering...")
+
+        current_speaker = None
+        current_text = []
+        confidence_scores = []
+        segment_count = 0
+        filtered_count = 0
+        CONFIDENCE_THRESHOLD = 0.7  # Filter out words below 70% confidence
+
+        from database import create_transcript
+
+        for word_info in words:
+            speaker_id = word_info.get('speaker', 0)
+            word = word_info.get('word', '')
+            confidence = word_info.get('confidence', 1.0)  # Default to 1.0 if not provided
+
+            # Filter low-confidence words to reduce errors
+            if confidence < CONFIDENCE_THRESHOLD:
+                filtered_count += 1
+                print(f"[Batch Transcription] Filtered low-confidence word: '{word}' ({confidence:.2f})")
+                continue
+
+            # Map speaker IDs to roles (0 = caller, 1 = agent)
+            speaker_label = 'caller' if speaker_id == 0 else 'agent'
+
+            if current_speaker is None:
+                current_speaker = speaker_label
+
+            if speaker_label != current_speaker:
+                # Speaker changed - save current segment
+                if current_text:
+                    text = ' '.join(current_text)
+                    avg_confidence = sum(confidence_scores) / len(confidence_scores) if confidence_scores else None
+                    create_transcript(
+                        call_sid=call_sid,
+                        speaker=current_speaker,
+                        text=text,
+                        is_final=True,
+                        confidence=avg_confidence,
+                        transcription_type='batch'
+                    )
+                    segment_count += 1
+                    conf_str = f" (conf: {avg_confidence:.2f})" if avg_confidence else ""
+                    print(f"[Batch Transcription] {current_speaker}: {text}{conf_str}")
+
+                # Start new segment
+                current_speaker = speaker_label
+                current_text = [word]
+                confidence_scores = [confidence]
+            else:
+                current_text.append(word)
+                confidence_scores.append(confidence)
+
+        # Save final segment
+        if current_text:
+            text = ' '.join(current_text)
+            avg_confidence = sum(confidence_scores) / len(confidence_scores) if confidence_scores else None
+            create_transcript(
+                call_sid=call_sid,
+                speaker=current_speaker,
+                text=text,
+                is_final=True,
+                confidence=avg_confidence,
+                transcription_type='batch'
+            )
+            segment_count += 1
+            conf_str = f" (conf: {avg_confidence:.2f})" if avg_confidence else ""
+            print(f"[Batch Transcription] {current_speaker}: {text}{conf_str}")
+
+        print(f"[Batch Transcription] ✅ Stored {segment_count} diarized transcript segments")
+        if filtered_count > 0:
+            print(f"[Batch Transcription] ⚠️  Filtered {filtered_count} low-confidence words")
+
+        # Step 6: Post-process with Claude for improved accuracy
+        print(f"[Batch Transcription] Starting Claude post-processing...")
+        claude_corrected = post_process_transcript_with_claude(call_sid)
+        if claude_corrected:
+            print(f"[Batch Transcription] ✅ Claude post-processing complete")
+        else:
+            print(f"[Batch Transcription] ⚠️  Claude post-processing skipped or failed")
+
+    except Exception as e:
+        print(f"[Batch Transcription] ❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 def send_audio_via_websocket(session_id, audio_bytes):
@@ -688,13 +1405,13 @@ def detect_transfer_intent(user_text):
     # Check for explicit transfer requests
     for keyword in transfer_keywords:
         if keyword in text_lower:
-            print(f"[Transfer Detection] 🎯 Keyword match: '{keyword}'")
+            print(f"[Transfer Detection] [DETECTED] Keyword match: '{keyword}'")
             return True
 
     # Check for buying intent
     for keyword in buying_keywords:
         if keyword in text_lower:
-            print(f"[Transfer Detection] 🎯 Buying intent: '{keyword}'")
+            print(f"[Transfer Detection] [DETECTED] Buying intent: '{keyword}'")
             return True
 
     return False
@@ -717,6 +1434,11 @@ async def handle_ai_response(session_id):
     call_sid = session['call_sid']
 
     try:
+        # Skip AI response if agent has joined conference
+        if conv_mgr.state == ConversationState.HUMAN_CONVERSATION:
+            print(f"[AI] Skipping AI response - agent is handling the call")
+            return
+
         # Mark AI as speaking (for barge-in detection)
         conv_mgr.start_ai_response()
 
@@ -724,52 +1446,104 @@ async def handle_ai_response(session_id):
         user_text = conv_mgr.get_user_text()
         print(f"\n[AI] Processing user input: '{user_text}'")
 
-        # FALLBACK: Check for transfer intent via keywords (safety net if Claude doesn't trigger)
-        keyword_transfer_detected = detect_transfer_intent(user_text)
-        if keyword_transfer_detected:
-            print(f"[AI] 🚨 Fallback transfer detection activated!")
+        forced_response = None
+        keyword_transfer_detected = False  # Initialize to avoid UnboundLocalError
 
-        # Get Claude's response
-        print(f"[AI] Calling Claude...")
-        ai_text = await claude.get_response(user_text)
-        print(f"[AI] Claude responded: '{ai_text}'\n")
+        # ==============================================================================
+        # CALL ROUTING WORKFLOW
+        # ==============================================================================
+        if not conv_mgr.routing_decision_made and not forced_response:
+            print(f"[Routing] Analyzing caller intent...")
 
-        # Check for detergent order markers
-        collect_name = '[COLLECT_DETERGENT_NAME]' in ai_text
-        collect_phone = '[COLLECT_DETERGENT_PHONE]' in ai_text
-        detergent_complete = '[DETERGENT_ORDER_COMPLETE]' in ai_text
+            from routing_engine import routing_engine
 
-        # Handle detergent order flow
-        if collect_name:
-            print(f"[AI] 🧴 Starting detergent order - collecting name")
-            conv_mgr.start_collecting_detergent_info()
-        elif collect_phone:
-            print(f"[AI] 🧴 Collecting phone number")
-            # Extract name from user's previous response (simple extraction)
-            conv_mgr.set_detergent_customer_name(user_text.strip())
-        elif detergent_complete:
-            print(f"[AI] 🧴 Detergent order complete - storing phone")
-            # Extract phone from user's response
-            conv_mgr.set_detergent_customer_phone(user_text.strip())
+            decision = routing_engine.determine_route(user_text, conv_mgr.get_conversation_history())
 
-            # Log the collected information
-            order_info = conv_mgr.get_detergent_order_info()
-            print(f"[AI] 🧴 Detergent Order Info:")
-            print(f"     Name: {order_info['name']}")
-            print(f"     Phone: {order_info['phone']}")
-            print(f"     Call SID: {order_info['call_sid']}")
+            if decision.department == 'MENU':
+                # Present menu options
+                print(f"[Routing] Presenting menu to caller")
+                forced_response = (
+                    "I can connect you to the right department. "
+                    "Say 'Sales' for new orders and product information. "
+                    "Say 'Support' for technical help. "
+                    "Say 'Billing' for payment questions. "
+                    "Which department can I help you reach?"
+                )
+
+            elif decision.needs_confirmation:
+                # Ask for confirmation before routing
+                print(f"[Routing] Need confirmation for: {decision.department}")
+                conv_mgr.routing_department = decision.department
+                conv_mgr.routing_department_id = decision.department_id
+                conv_mgr.routing_confidence = decision.confidence
+                conv_mgr.routing_method = decision.method
+                conv_mgr.routing_reason = decision.reason
+                conv_mgr.awaiting_routing_confirmation = True
+
+                forced_response = f"I'll connect you to our {decision.department} team. Does that sound right?"
+
+            else:
+                # High confidence - route immediately
+                print(f"[Routing] Auto-routing to {decision.department} (confidence: {decision.confidence})")
+                conv_mgr.routing_decision_made = True
+                conv_mgr.routing_department = decision.department
+                conv_mgr.routing_department_id = decision.department_id
+                conv_mgr.routing_confidence = decision.confidence
+                conv_mgr.routing_method = decision.method
+                conv_mgr.routing_reason = decision.reason
+
+                # Initiate transfer (will be called after AI speaks)
+                forced_response = f"Perfect! Connecting you to {decision.department} now. [TRANSFER_TO_DEPARTMENT]"
+
+        elif conv_mgr.awaiting_routing_confirmation and not forced_response:
+            # User responding to confirmation question
+            print(f"[Routing] Processing confirmation response")
+            user_response = user_text.lower()
+
+            if any(word in user_response for word in ['yes', 'yeah', 'yep', 'correct', 'right', 'sure', 'ok', 'okay']):
+                # Confirmed - proceed with routing
+                print(f"[Routing] User confirmed routing to {conv_mgr.routing_department}")
+                conv_mgr.routing_decision_made = True
+                conv_mgr.awaiting_routing_confirmation = False
+
+                forced_response = f"Great! Connecting you to {conv_mgr.routing_department} now. [TRANSFER_TO_DEPARTMENT]"
+
+            else:
+                # User said no - ask again
+                print(f"[Routing] User declined routing, asking again")
+                conv_mgr.awaiting_routing_confirmation = False
+                conv_mgr.routing_department = None
+
+                forced_response = "My apologies. How can I help you today?"
+
+        # ==============================================================================
+        # END ROUTING WORKFLOW
+        # ==============================================================================
+
+        # Use forced response or get Claude's response
+        if forced_response:
+            ai_text = forced_response
+        else:
+            # FALLBACK: Check for transfer intent via keywords (safety net if Claude doesn't trigger)
+            keyword_transfer_detected = detect_transfer_intent(user_text)
+            if keyword_transfer_detected:
+                print(f"[AI] [DETECTED] Fallback transfer detection activated!")
+
+            # Get Claude's response
+            print(f"[AI] Calling Claude...")
+            ai_text = await claude.get_response(user_text)
+            print(f"[AI] Claude responded: '{ai_text}'\n")
 
         # Check for transfer request from Claude
         transfer_requested_by_claude = '[TRANSFER_TO_SALES]' in ai_text
+        transfer_to_department = '[TRANSFER_TO_DEPARTMENT]' in ai_text
 
         # Combine Claude's decision with keyword fallback
-        transfer_requested = transfer_requested_by_claude or keyword_transfer_detected or detergent_complete
+        transfer_requested = transfer_requested_by_claude or keyword_transfer_detected or transfer_to_department
 
         # Remove markers from spoken text
         spoken_text = ai_text.replace('[TRANSFER_TO_SALES]', '').strip()
-        spoken_text = spoken_text.replace('[COLLECT_DETERGENT_NAME]', '').strip()
-        spoken_text = spoken_text.replace('[COLLECT_DETERGENT_PHONE]', '').strip()
-        spoken_text = spoken_text.replace('[DETERGENT_ORDER_COMPLETE]', '').strip()
+        spoken_text = spoken_text.replace('[TRANSFER_TO_DEPARTMENT]', '').strip()
 
         # If keyword detected transfer but Claude didn't trigger it, override response
         if keyword_transfer_detected and not transfer_requested_by_claude:
@@ -793,19 +1567,88 @@ async def handle_ai_response(session_id):
         # Mark conversation complete
         conv_mgr.finish_ai_response(spoken_text)
 
+        # CRITICAL FIX: If we used a forced response (bypassed Claude), manually sync to Claude's history
+        # This prevents Claude from having stale/incomplete history when it's called next time
+        if forced_response:
+            print(f"[AI] [SYNC] Adding forced response to Claude's conversation history")
+            claude.conversation_history.append({
+                'role': 'user',
+                'content': user_text
+            })
+            claude.conversation_history.append({
+                'role': 'assistant',
+                'content': spoken_text
+            })
+            print(f"[AI] [SYNC] Claude history now has {len(claude.conversation_history)} messages")
+
         # Log AI response to call manager (as final transcript)
         call_manager.add_transcript(call_sid, spoken_text, is_final=True, speaker='AI')
 
-        # Handle transfer if requested (by Claude OR by keyword fallback)
+        # Store AI response in database
+        try:
+            from database import create_transcript
+            create_transcript(
+                call_sid=call_sid,
+                speaker='ai',
+                text=spoken_text,
+                is_final=True,
+                confidence=None
+            )
+        except Exception as e:
+            print(f"[Database] Error storing AI transcript: {e}")
+
+        # Handle transfer if requested (by Claude OR by keyword fallback OR routing decision)
         if transfer_requested:
-            if transfer_requested_by_claude:
+            if transfer_to_department and conv_mgr.routing_department:
+                # New routing workflow - transfer to specific department
+                print(f"[AI] 🔄 Routing to {conv_mgr.routing_department} department!")
+
+                # Give a moment for the announcement to finish playing
+                await asyncio.sleep(2)
+
+                # Call the /dial-agent endpoint to initiate conference transfer
+                import requests
+                try:
+                    response = requests.post(f"{Config.BASE_URL}/dial-agent", json={
+                        'call_sid': call_sid,
+                        'department': conv_mgr.routing_department,
+                        'agent_phone': routing_engine.get_department_by_name(conv_mgr.routing_department).phone_number
+                    }, timeout=5)
+
+                    if response.status_code == 200:
+                        print(f"[AI] ✓ Transfer initiated to {conv_mgr.routing_department}")
+
+                        # Log routing decision to database
+                        from database import create_call_route
+                        from datetime import datetime
+                        create_call_route({
+                            'call_sid': call_sid,
+                            'caller_phone': session.get('caller_number'),
+                            'routing_decision': conv_mgr.routing_department,
+                            'routing_method': conv_mgr.routing_method,
+                            'routing_reason': conv_mgr.routing_reason,
+                            'confidence_score': conv_mgr.routing_confidence,
+                            'routed_to': routing_engine.get_department_by_name(conv_mgr.routing_department).phone_number,
+                            'department_id': conv_mgr.routing_department_id,
+                            'routed_at': datetime.utcnow()
+                        })
+                    else:
+                        print(f"[AI] ❌ Transfer failed: {response.text}")
+
+                except Exception as e:
+                    print(f"[AI] ❌ Error initiating transfer: {e}")
+
+            elif transfer_requested_by_claude:
+                # Legacy: Transfer to sales (old workflow)
                 print(f"[AI] 🔄 Transfer to sales requested by Claude!")
+                await asyncio.sleep(2)
+                transfer_call(call_sid, Config.SALES_FORWARD_NUMBER)
             else:
+                # Keyword fallback
                 print(f"[AI] 🔄 Transfer to sales triggered by keyword fallback!")
-            # Give a moment for the announcement to finish playing
-            await asyncio.sleep(2)
-            # Transfer the call
-            transfer_call(call_sid, Config.SALES_FORWARD_NUMBER)
+                await asyncio.sleep(2)
+                transfer_call(call_sid, Config.SALES_FORWARD_NUMBER)
+
             print(f"[AI] Transfer initiated, ending AI session\n")
 
     except Exception as e:
@@ -833,6 +1676,11 @@ def deepgram_worker(session_id, call_sid):
         """Callback when stable interim detected - start generating response early"""
         nonlocal predictive_response_data
 
+        # CRITICAL: Disable predictive responses when agent has joined
+        if conv_mgr.state == ConversationState.HUMAN_CONVERSATION:
+            print(f"[Predictive] ⚠️ Skipping - agent is handling the call")
+            return
+
         # Cancel any existing predictive response
         if predictive_response_data['task'] and not predictive_response_data['task'].done():
             predictive_response_data['task'].cancel()
@@ -848,15 +1696,11 @@ def deepgram_worker(session_id, call_sid):
                 ai_text = await claude.get_response(interim_text)
                 print(f"[Predictive] Claude ready: '{ai_text[:50]}...'")
 
-                # Check for transfer and detergent markers
+                # Check for transfer markers
                 transfer_requested = '[TRANSFER_TO_SALES]' in ai_text
-                detergent_complete = '[DETERGENT_ORDER_COMPLETE]' in ai_text
 
                 # Remove all markers from spoken text
                 spoken_text = ai_text.replace('[TRANSFER_TO_SALES]', '').strip()
-                spoken_text = spoken_text.replace('[COLLECT_DETERGENT_NAME]', '').strip()
-                spoken_text = spoken_text.replace('[COLLECT_DETERGENT_PHONE]', '').strip()
-                spoken_text = spoken_text.replace('[DETERGENT_ORDER_COMPLETE]', '').strip()
 
                 # Generate audio
                 audio_bytes = await tts.text_to_speech(spoken_text)
@@ -865,7 +1709,7 @@ def deepgram_worker(session_id, call_sid):
                     predictive_response_data['result'] = {
                         'audio': audio_bytes,
                         'text': spoken_text,
-                        'transfer': transfer_requested or detergent_complete,
+                        'transfer': transfer_requested,
                         'interim_text': interim_text
                     }
                     print(f"[Predictive] ✅ Response ready in advance!")
@@ -882,8 +1726,59 @@ def deepgram_worker(session_id, call_sid):
     # Set up predictive response callback
     conv_mgr.on_predictive_trigger = on_predictive_trigger
 
+    def identify_speaker(text: str, is_final: bool, conv_mgr) -> str:
+        """
+        Identify who is speaking: caller, agent, or AI
+
+        Uses heuristics based on:
+        - Call state (before/after agent joined)
+        - Timing (agent recently joined?)
+        - Known AI responses (filtered by echo detection)
+        """
+        # AI responses are already filtered by echo detection, so we won't see them here
+
+        # Check if agent has joined the conference
+        if conv_mgr.state == ConversationState.HUMAN_CONVERSATION and conv_mgr.agent_joined_at:
+            # Both caller and agent are present
+            # Use timing and heuristics to distinguish
+
+            from datetime import datetime
+            time_since_join = (datetime.utcnow() - conv_mgr.agent_joined_at).total_seconds()
+
+            # First 5 seconds after agent joins - likely agent greeting
+            if time_since_join < 5:
+                # Look for agent greeting patterns
+                agent_greetings = ['hello', 'hi', 'thank', 'thanks for', 'this is', 'how can i help', 'what can i do']
+                if any(phrase in text.lower() for phrase in agent_greetings):
+                    return 'agent'
+
+            # For longer conversations, we'd need more sophisticated logic or Deepgram diarization
+            # For now, alternate between caller and agent (simple but imperfect)
+            # This will be improved with Deepgram speaker diarization in production
+
+            # Check last speaker from database
+            from database import get_session, CallTranscript
+            session = get_session()
+            try:
+                last_transcript = session.query(CallTranscript).filter_by(
+                    call_sid=call_sid,
+                    is_final=True
+                ).order_by(CallTranscript.timestamp.desc()).first()
+
+                if last_transcript:
+                    # Alternate speakers (crude but functional)
+                    return 'agent' if last_transcript.speaker == 'caller' else 'caller'
+            finally:
+                session.close()
+
+            # Default to caller if no history
+            return 'caller'
+
+        # Before agent joins, all speech is from caller
+        return 'caller'
+
     def on_transcript(text, is_final):
-        """Callback when transcript received"""
+        """Callback when transcript received - now with database storage and speaker ID"""
         # Check if AI is currently speaking - if so, ignore transcripts (this is echo)
         current_time = time.time()
         if call_sid in call_ai_speaking_until:
@@ -897,11 +1792,28 @@ def deepgram_worker(session_id, call_sid):
                 del call_ai_speaking_until[call_sid]
                 print(f"[Echo Filter] AI finished speaking, resuming transcript processing")
 
-        # Send to old call manager for logging (with speaker label)
-        call_manager.add_transcript(call_sid, text, is_final, speaker='Caller')
+        # Identify speaker
+        speaker = identify_speaker(text, is_final, conv_mgr)
 
-        # Send to conversation manager for pause detection
-        conv_mgr.add_transcript(text, is_final)
+        # Store in database (all transcripts - interim and final)
+        try:
+            from database import create_transcript
+            create_transcript(
+                call_sid=call_sid,
+                speaker=speaker,
+                text=text,
+                is_final=is_final,
+                confidence=None  # Could extract from Deepgram metadata if needed
+            )
+        except Exception as e:
+            print(f"[Database] Error storing transcript: {e}")
+
+        # Send to old call manager for logging (with speaker label)
+        call_manager.add_transcript(call_sid, text, is_final, speaker=speaker)
+
+        # Send to conversation manager for pause detection (only if caller speaking before agent joins)
+        if speaker == 'caller' and conv_mgr.state != ConversationState.HUMAN_CONVERSATION:
+            conv_mgr.add_transcript(text, is_final)
 
     # Create new event loop for this thread
     loop = asyncio.new_event_loop()
@@ -945,6 +1857,12 @@ def deepgram_worker(session_id, call_sid):
 
                     # Check if user has paused speaking
                     if conv_mgr.check_for_pause():
+                        # IMPORTANT: Skip AI response if agent has joined conference
+                        if conv_mgr.state == ConversationState.HUMAN_CONVERSATION:
+                            print(f"[Deepgram] Skipping AI response - agent is handling the call")
+                            conv_mgr.reset()  # Clear the buffer but don't respond
+                            continue
+
                         response_start_time = time.time()
                         user_text = conv_mgr.get_user_text()
                         print(f"\n[TIMING] Response generation starting for: '{user_text}'")
@@ -967,6 +1885,13 @@ def deepgram_worker(session_id, call_sid):
                             conv_mgr.finish_ai_response(cached_result['text'])
                             call_manager.add_transcript(call_sid, cached_result['text'], is_final=True, speaker='AI')
 
+                            # Store in database
+                            try:
+                                from database import create_transcript
+                                create_transcript(call_sid=call_sid, speaker='ai', text=cached_result['text'], is_final=True, confidence=None)
+                            except Exception as e:
+                                print(f"[Database] Error storing cached AI transcript: {e}")
+
                             total_duration = time.time() - response_start_time
                             print(f"[TIMING] ✅ Total cached response time: {total_duration:.3f}s\n")
 
@@ -988,6 +1913,13 @@ def deepgram_worker(session_id, call_sid):
 
                             conv_mgr.finish_ai_response(result['text'])
                             call_manager.add_transcript(call_sid, result['text'], is_final=True, speaker='AI')
+
+                            # Store in database
+                            try:
+                                from database import create_transcript
+                                create_transcript(call_sid=call_sid, speaker='ai', text=result['text'], is_final=True, confidence=None)
+                            except Exception as e:
+                                print(f"[Database] Error storing predictive AI transcript: {e}")
 
                             # Handle transfer if needed
                             if result['transfer']:
@@ -1027,6 +1959,98 @@ def deepgram_worker(session_id, call_sid):
     loop.close()
 
 
+@app.route("/orders")
+def orders_dashboard():
+    """View recent orders and sync status"""
+    try:
+        from database import get_recent_orders
+
+        orders = get_recent_orders(limit=50)
+
+        html = '''
+        <html>
+        <head>
+            <title>Detergent Orders</title>
+            <style>
+                body { font-family: Arial; padding: 20px; }
+                table { border-collapse: collapse; width: 100%; margin-top: 20px; }
+                th, td { border: 1px solid #ddd; padding: 12px; text-align: left; font-size: 14px; }
+                th { background-color: #4CAF50; color: white; position: sticky; top: 0; }
+                .synced { background-color: #d4edda; }
+                .pending { background-color: #fff3cd; }
+                .failed { background-color: #f8d7da; }
+                .nav { margin-bottom: 20px; }
+                .nav a { margin-right: 15px; color: #2ca01c; text-decoration: none; }
+                .nav a:hover { text-decoration: underline; }
+            </style>
+        </head>
+        <body>
+            <h1>Detergent Orders</h1>
+            <div class="nav">
+                <a href="/orders">Refresh</a>
+            </div>
+        '''
+
+        if not orders:
+            html += '<p>No orders yet. Orders will appear here after customers complete the detergent order flow.</p>'
+        else:
+            html += f'''
+            <p>Showing {len(orders)} most recent orders</p>
+            <table>
+                <tr>
+                    <th>ID</th>
+                    <th>Date</th>
+                    <th>Name</th>
+                    <th>Phone</th>
+                    <th>Address</th>
+                    <th>Payment</th>
+                    <th>Status</th>
+                    <th>QBO Invoice</th>
+                </tr>
+            '''
+
+            for order in orders:
+                status_class = order.sync_status
+                qb_invoice = order.qb_invoice_number if order.qb_invoice_number else '-'
+                date_str = order.created_at.strftime('%Y-%m-%d %H:%M')
+                address_short = f"{order.address_city}, {order.address_state}"
+
+                html += f'''
+                <tr class="{status_class}">
+                    <td>{order.id}</td>
+                    <td>{date_str}</td>
+                    <td>{order.customer_name}</td>
+                    <td>{order.customer_phone}</td>
+                    <td>{address_short}</td>
+                    <td>{order.payment_method}</td>
+                    <td><strong>{order.sync_status}</strong></td>
+                    <td>{qb_invoice}</td>
+                </tr>
+                '''
+
+            html += '</table>'
+
+        html += '''
+        </body>
+        </html>
+        '''
+
+        return html
+
+    except Exception as e:
+        import traceback
+        return f'''
+        <html>
+        <body style="font-family: Arial; padding: 40px;">
+            <h1>Error Loading Orders</h1>
+            <p style="color: red;">Error: {str(e)}</p>
+            <pre style="background: #f5f5f5; padding: 10px; overflow-x: auto;">{traceback.format_exc()}</pre>
+            <p>Make sure the database is initialized. Run: <code>python database.py</code></p>
+        </body>
+        </html>
+        ''', 500
+
+
 if __name__ == "__main__":
     print("\n" + "="*80)
     print("PHONE AGENT SERVER STARTING")
@@ -1039,9 +2063,9 @@ if __name__ == "__main__":
     print("Generating greeting audio...")
     greeting_path = generate_greeting_audio()
     if greeting_path:
-        print(f"✅ Greeting audio ready\n")
+        print(f"[OK] Greeting audio ready\n")
     else:
-        print(f"⚠️ Greeting audio generation failed - will use Twilio TTS fallback\n")
+        print(f"[WARNING] Greeting audio generation failed - will use Twilio TTS fallback\n")
 
     # Load or generate cached responses for common questions
     print("="*80)
@@ -1050,13 +2074,13 @@ if __name__ == "__main__":
         print("[Cache] No cache found - generating fresh responses...")
         generate_cached_responses()
     else:
-        print("[Cache] ✅ All responses loaded from disk - instant startup!\n")
+        print("[Cache] [OK] All responses loaded from disk - instant startup!\n")
     print("="*80 + "\n")
 
     if cached_responses:
-        print(f"🚀 Server ready - all optimizations active! ({len(cached_responses)} cached responses)\n")
+        print(f"[READY] Server ready - all optimizations active! ({len(cached_responses)} cached responses)\n")
     else:
-        print(f"⚠️  Server ready - but cache failed. Responses will be SLOW.\n")
+        print(f"[WARNING] Server ready - but cache failed. Responses will be SLOW.\n")
 
     from werkzeug.serving import run_simple
     run_simple('0.0.0.0', Config.PORT, app, use_reloader=False, threaded=True)

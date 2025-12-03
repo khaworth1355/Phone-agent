@@ -63,18 +63,7 @@ class Config:
         '2. Add [TRANSFER_TO_SALES] at the END of your response\n'
         '3. DO NOT say you cannot transfer - you CAN and WILL transfer them\n\n'
         'Example response: "I\'d be happy to connect you with our sales team to complete your purchase. [TRANSFER_TO_SALES]"\n'
-        'The marker MUST be exactly [TRANSFER_TO_SALES] in square brackets.\n\n'
-        '🧴 DETERGENT ORDER SPECIAL HANDLING:\n'
-        'When a caller wants to buy/order MORE DETERGENT (TurboKlean), follow this EXACT process:\n'
-        '1. First, ask for their name: "I can help with that. May I have your name please?"\n'
-        '   - Add [COLLECT_DETERGENT_NAME] at the END of your response\n'
-        '2. After they provide their name, ask for phone number: "Thank you [name]. What\'s the best phone number to reach you?"\n'
-        '   - Add [COLLECT_DETERGENT_PHONE] at the END of your response\n'
-        '3. After they provide phone number, confirm and transfer: "Perfect [name], I\'ll connect you with our team to complete your detergent order."\n'
-        '   - Add [DETERGENT_ORDER_COMPLETE] at the END of your response\n\n'
-        'IMPORTANT: This special flow ONLY applies when they want to buy DETERGENT/TurboKlean.\n'
-        'For other products (T3, T5 washers), use the normal [TRANSFER_TO_SALES] flow.\n'
-        'Markers must be EXACTLY as written in square brackets.')
+        'The marker MUST be exactly [TRANSFER_TO_SALES] in square brackets.')
 
     # Load knowledge base and append to system prompt
     _knowledge_base = load_knowledge_base()
@@ -96,6 +85,10 @@ class Config:
     # Development: Use Cloudflare tunnel or ngrok
     WEBSOCKET_URL = os.getenv('WEBSOCKET_URL', 'wss://localhost/media')
 
+    # Base URL for webhooks (HTTP/HTTPS version of WEBSOCKET_URL domain)
+    # Production: https://your-domain.com or https://YOUR_DROPLET_IP
+    BASE_URL = os.getenv('BASE_URL', 'https://localhost')
+
     # Conversation settings
     PAUSE_THRESHOLD = float(os.getenv('PAUSE_THRESHOLD', '0.3'))  # Seconds of silence before triggering response
     RESPONSE_TIMEOUT = float(os.getenv('RESPONSE_TIMEOUT', '15.0'))  # Max time for Claude/ElevenLabs
@@ -106,6 +99,13 @@ class Config:
 
     # Call forwarding
     SALES_FORWARD_NUMBER = os.getenv('SALES_FORWARD_NUMBER', '+18166741783')  # Sales team number
+
+    # Database
+    DATABASE_URL = os.getenv('DATABASE_URL')
+
+    # Admin interface settings
+    ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'changeme123')  # Change this in production!
+    ADMIN_ENABLED = os.getenv('ADMIN_ENABLED', 'true').lower() == 'true'
 
     # Flask settings
     PORT = int(os.getenv('PORT', 5000))
